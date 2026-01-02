@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test outputs
+*.txt
+!requirements.txt
+
+# Input/Output data (contains client data - don't commit)
+inputs/
+outputs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -4,6 +4,49 @@
 
 ---
 
+## 🚀 Quick Start
+
+```bash
+# 1. Clone and setup
+git clone https://github.com/ZainJaffer/ICPv2.git
+cd ICPv2
+
+# 2. Create virtual environment
+python -m venv venv
+.\venv\Scripts\Activate  # Windows
+# source venv/bin/activate  # Mac/Linux
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure environment
+# Copy .env.example to .env and fill in your keys:
+# - SUPABASE_URL, SUPABASE_KEY
+# - APIFY_API_TOKEN
+# - OPENAI_API_KEY
+
+# 5. Run the server
+uvicorn app.main:app --reload --port 8001
+```
+
+**API Docs:** http://localhost:8001/docs
+
+---
+
+## 📊 Current Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Project Setup | ✅ Complete |
+| 1 | Database Schema | ✅ Complete |
+| 2 | HTML Ingestion | ✅ Complete & Tested |
+| 3 | Enrichment (Apify scraping) | 📝 Code written, not tested |
+| 4 | ICP Qualification (LLM scoring) | 📝 Code written, not tested |
+| 5 | CSV Export | 📝 Code written, not tested |
+| 6 | Fathom ICP Sync | ❌ Not started |
+
+---
+
 ## Business Context
 
 **What we do:** Create LinkedIn content for clients (founders, executives, etc.)
@@ -23,11 +66,36 @@
 
 | Component | Technology |
 |-----------|------------|
-| Backend | FastAPI |
+| Backend | FastAPI + Pydantic |
 | Database | Supabase (state machine + profile cache) |
-| AI/LLM | Claude 3.5 / GPT-4o with Instructor + Pydantic |
-| File I/O | API upload endpoint (v1), Google Drive (future) |
-| Scraping | Existing internal scraper |
+| AI/LLM | GPT-5-mini with structured JSON outputs |
+| File I/O | HTML file ingestion (local), API upload endpoint |
+| Scraping | Apify LinkedIn Profile Scraper |
+
+---
+
+## Project Structure
+
+```
+ICPv2/
+├── app/
+│   ├── main.py                 # FastAPI application
+│   ├── routers/
+│   │   ├── clients.py          # Client & ICP management
+│   │   └── batches.py          # Batch operations (enrich, qualify, export)
+│   └── services/
+│       ├── supabase_client.py  # Database client
+│       ├── html_parser.py      # Extract URLs from HTML
+│       ├── apify_scraper.py    # LinkedIn profile scraping
+│       ├── enrichment.py       # Batch enrichment logic
+│       ├── icp_matcher.py      # LLM-based ICP scoring
+│       └── profile_id_utils.py # LinkedIn ID utilities
+├── inputs/                     # HTML files to process
+├── outputs/                    # Generated CSVs
+├── scripts/                    # CLI utilities
+├── requirements.txt
+└── README.md
+```
 
 ---
 
@@ -220,43 +288,46 @@ CREATE INDEX idx_profile_cache_scraped ON profile_cache(scraped_at);
 
 ## Build Phases
 
-### Phase 0: Project Setup
-- [ ] FastAPI project skeleton
-- [ ] Supabase connection
-- [ ] Error handling middleware
-- [ ] Logging configuration
-- [ ] Environment variables (.env)
+### Phase 0: Project Setup ✅
+- [x] FastAPI project skeleton
+- [x] Supabase connection
+- [x] Error handling middleware
+- [x] Logging configuration
+- [x] Environment variables (.env)
 
-### Phase 1: Database Schema
-- [ ] Create Supabase tables
-- [ ] Create indexes
-- [ ] Test connections
+### Phase 1: Database Schema ✅
+- [x] Create Supabase tables
+- [x] Create indexes
+- [x] Test connections
 
-### Phase 2: HTML Ingestion
-- [ ] URL extraction from HTML
-- [ ] Batch creation
-- [ ] Lead creation with deduplication
-- [ ] Endpoint: `POST /clients/{id}/ingest`
+### Phase 2: HTML Ingestion ✅
+- [x] URL extraction from HTML (handles URN-style LinkedIn IDs)
+- [x] Batch creation
+- [x] Lead creation with deduplication
+- [x] Endpoint: `POST /clients/{id}/ingest`
 
-### Phase 3: Enrichment Service
-- [ ] Internal scraper integration
-- [ ] Cache check logic (30-day TTL)
-- [ ] Status updates
-- [ ] Endpoint: `POST /batches/{id}/enrich`
+### Phase 3: Enrichment Service 📝
+- [x] Apify scraper integration (code written)
+- [x] Cache check logic (30-day TTL)
+- [x] Status updates
+- [x] Endpoint: `POST /batches/{id}/enrich`
+- [ ] **Testing pending**
 
-### Phase 4: Qualification Service
-- [ ] ICP matching prompt with Instructor
-- [ ] Score + reasoning generation (use hardcoded test ICP first)
-- [ ] Status updates
-- [ ] Endpoint: `POST /batches/{id}/qualify`
+### Phase 4: Qualification Service 📝
+- [x] ICP matching prompt with GPT-5-mini
+- [x] Score + reasoning generation
+- [x] Status updates
+- [x] Endpoint: `POST /batches/{id}/qualify`
+- [ ] **Testing pending**
 
-### Phase 5: Export Service
-- [ ] CSV generation
-- [ ] Download endpoint: `GET /batches/{id}/export`
+### Phase 5: Export Service 📝
+- [x] CSV generation
+- [x] Download endpoint: `GET /batches/{id}/export`
+- [ ] **Testing pending**
 
-### Phase 6: Fathom ICP Sync (wire up last)
+### Phase 6: Fathom ICP Sync ❌
 - [ ] Fathom API client
-- [ ] ICP extraction prompt with Instructor
+- [ ] ICP extraction prompt
 - [ ] Accumulation logic (expand, don't replace)
 - [ ] Endpoint: `POST /clients/{id}/sync-icp`
 

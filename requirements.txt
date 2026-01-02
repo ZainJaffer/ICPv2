@@ -1,0 +1,31 @@
+# LinkedIn Qualifier v1 - Python Dependencies
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# HTTP Client
+httpx>=0.26.0
+
+# Apify SDK
+apify-client>=1.6.0
+
+# OpenAI (GPT-5-mini for ICP matching)
+openai>=1.12.0
+
+# Pydantic for data validation
+pydantic>=2.5.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# CSV Export
+# (built-in csv module is sufficient)
+
+# Optional: Instructor for structured LLM outputs
+# instructor>=0.5.0
