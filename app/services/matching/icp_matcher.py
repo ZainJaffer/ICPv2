@@ -1,9 +1,14 @@
 """
-ICP Matcher Service - Score LinkedIn profiles against client ICPs using GPT-5-mini.
+ICP Matcher Service - Score LinkedIn profiles against client ICPs.
 
-Uses structured LLM outputs to generate:
-- ICP score (0-100)
-- Match reasoning
+Architecture:
+1. Expand ICP criteria via LLM (for richer semantic matching)
+2. Generate ICP embedding
+3. Vector search to rank all leads by similarity
+4. Rerank with Jina for final ordering
+5. Convert scores and update leads
+
+This is much faster than LLM-per-profile (1 LLM call vs N calls).
 """
 
 import os
@@ -14,17 +19,23 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from ..db.supabase_client import supabase
+from .embeddings import generate_embedding, create_profile_text, format_embedding_for_postgres
+from .reranker import get_reranker
 
+load_dotenv(".env.local")
 load_dotenv()
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Model to use
-MODEL = "gpt-5-mini"
+MODEL = "gpt-4o-mini"
 
 
-ICP_MATCHING_PROMPT = """You are scoring a LinkedIn profile against an Ideal Customer Profile (ICP).
+# =============================================================================
+# ICP Expansion
+# =============================================================================
+
+ICP_EXPANSION_PROMPT = """You are expanding ICP (Ideal Customer Profile) criteria into a rich semantic description.
 
 ## ICP CRITERIA
 
@@ -32,211 +43,159 @@ Target Titles: {target_titles}
 Target Industries: {target_industries}
 Company Sizes: {company_sizes}
 Target Keywords: {target_keywords}
-Exclude Titles: {exclude_titles}
+Notes: {notes}
 
-## LINKEDIN PROFILE
+## TASK
 
-Name: {name}
-Headline: {headline}
-Company: {company}
-Location: {location}
-Current Job Titles: {current_job_titles}
+Expand these criteria into a detailed paragraph that includes:
+1. The exact titles AND related/equivalent titles (e.g., CFO → Chief Financial Officer, VP Finance, Finance Director, Head of Finance)
+2. The industries AND related industries
+3. Company size descriptions
+4. Seniority and decision-making authority indicators
+5. Any keywords or signals that would indicate a good match
 
-Full Profile Data:
-{profile_summary}
+Write 2-3 paragraphs that fully describe the ideal person. Be comprehensive.
+This text will be used for semantic embedding matching.
 
-## SCORING RULES
+## RESPONSE
 
-Score 0-100 based on how well this profile matches the ICP:
-
-- **90-100**: Perfect match - title, industry, and company size all align strongly
-- **70-89**: Strong match - most criteria align, minor gaps
-- **50-69**: Moderate match - some criteria align, some don't
-- **30-49**: Weak match - few criteria align
-- **10-29**: Poor match - mostly misaligned
-- **0-9**: No match - completely outside ICP
-
-IMPORTANT:
-- If the person's title is in the EXCLUDE list, score should be 0-10
-- If no ICP criteria are provided, score based on general relevance
-- Consider the person's seniority and decision-making authority
-
-## RESPONSE FORMAT
-
-Respond with JSON only:
-{{
-  "score": <0-100>,
-  "reasoning": "<2-3 sentence explanation of the score>"
-}}"""
+Respond with just the expanded description, no JSON or formatting."""
 
 
-def format_list(items: Optional[List[str]]) -> str:
-    """Format a list for display in the prompt."""
-    if not items:
-        return "Not specified"
-    return ", ".join(items)
-
-
-def create_profile_summary(profile_data: Dict[str, Any]) -> str:
-    """Create a concise summary of profile data for the prompt."""
-    if not profile_data:
-        return "No additional profile data available"
-    
-    parts = []
-    
-    # Add summary/about
-    if profile_data.get("summary"):
-        parts.append(f"About: {profile_data['summary'][:300]}...")
-    
-    # Add current positions
-    positions = profile_data.get("positions", [])
-    if positions:
-        parts.append("Current Positions:")
-        for pos in positions[:3]:  # Limit to first 3
-            title = pos.get("title", "Unknown")
-            company = pos.get("company", {})
-            company_name = company.get("name") if isinstance(company, dict) else company
-            parts.append(f"  - {title} at {company_name}")
-    
-    # Add skills
-    skills = profile_data.get("skills", [])
-    if skills:
-        skill_names = [s.get("name") if isinstance(s, dict) else s for s in skills[:10]]
-        parts.append(f"Skills: {', '.join(skill_names)}")
-    
-    return "\n".join(parts) if parts else "No additional profile data available"
-
-
-async def score_profile(
-    lead: Dict[str, Any],
-    icp: Dict[str, Any]
-) -> Dict[str, Any]:
+def expand_icp(icp: Dict[str, Any]) -> str:
     """
-    Score a single profile against the ICP.
+    Expand ICP criteria into a rich semantic description using LLM.
     
-    Args:
-        lead: Lead record with profile_data
-        icp: ICP criteria from client_icps table
-    
-    Returns:
-        Dict with score and reasoning
+    This creates better embeddings by including synonyms and related terms.
+    E.g., "CFO" expands to "CFO, Chief Financial Officer, VP Finance, Head of Finance..."
     """
     try:
-        # Build the prompt
-        profile_data = lead.get("profile_data", {}) or {}
-        
-        prompt = ICP_MATCHING_PROMPT.format(
-            target_titles=format_list(icp.get("target_titles")),
-            target_industries=format_list(icp.get("target_industries")),
-            company_sizes=format_list(icp.get("company_sizes")),
-            target_keywords=format_list(icp.get("target_keywords")),
-            exclude_titles=format_list(icp.get("exclude_titles")),
-            name=lead.get("name", "Unknown"),
-            headline=lead.get("headline", "Not available"),
-            company=lead.get("company", "Not available"),
-            location=lead.get("location", "Not available"),
-            current_job_titles=", ".join(lead.get("current_job_titles") or ["Not available"]),
-            profile_summary=create_profile_summary(profile_data)
+        prompt = ICP_EXPANSION_PROMPT.format(
+            target_titles=", ".join(icp.get("target_titles") or ["Any title"]),
+            target_industries=", ".join(icp.get("target_industries") or ["Any industry"]),
+            company_sizes=", ".join(icp.get("company_sizes") or ["Any size"]),
+            target_keywords=", ".join(icp.get("target_keywords") or []),
+            notes=icp.get("notes") or "None"
         )
         
-        # Call GPT-5-mini
         response = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,  # Low temperature for consistency
-            response_format={"type": "json_object"}
+            temperature=0.3
         )
         
-        # Parse response
-        result = json.loads(response.choices[0].message.content)
-        
-        score = int(result.get("score", 0))
-        reasoning = result.get("reasoning", "No reasoning provided")
-        
-        # Clamp score to valid range
-        score = max(0, min(100, score))
-        
-        return {
-            "success": True,
-            "score": score,
-            "reasoning": reasoning
-        }
+        expanded = response.choices[0].message.content.strip()
+        print(f"[ICP Matcher] Expanded ICP: {expanded[:200]}...")
+        return expanded
         
     except Exception as e:
-        print(f"[ICP Matcher] Error scoring profile: {e}")
-        return {
-            "success": False,
-            "score": 0,
-            "reasoning": f"Error: {str(e)[:100]}"
-        }
+        print(f"[ICP Matcher] Error expanding ICP: {e}")
+        # Fallback: just concatenate the criteria
+        parts = []
+        if icp.get("target_titles"):
+            parts.append(f"Looking for: {', '.join(icp['target_titles'])}")
+        if icp.get("target_industries"):
+            parts.append(f"Industries: {', '.join(icp['target_industries'])}")
+        if icp.get("company_sizes"):
+            parts.append(f"Company sizes: {', '.join(icp['company_sizes'])}")
+        return " | ".join(parts) or "General professional profile"
 
 
-async def qualify_lead(lead: Dict[str, Any], icp: Dict[str, Any]) -> Dict[str, Any]:
+# =============================================================================
+# Vector Search
+# =============================================================================
+
+def vector_search_leads(icp_embedding: List[float], batch_id: str) -> List[Dict[str, Any]]:
     """
-    Qualify a single lead by scoring against ICP.
+    Search all leads in a batch by similarity to ICP embedding.
     
-    Args:
-        lead: Lead record from database
-        icp: ICP criteria
-    
-    Returns:
-        Dict with qualification result
+    Uses the match_leads() Postgres function with pgvector.
+    Returns ALL leads, ranked by similarity.
     """
-    lead_id = lead["id"]
-    
     try:
-        # Score the profile
-        result = await score_profile(lead, icp)
+        embedding_str = format_embedding_for_postgres(icp_embedding)
         
-        if not result["success"]:
-            # Update lead with error
-            supabase.table("leads").update({
-                "status": "failed",
-                "error_message": result.get("reasoning", "Scoring failed"),
-                "retry_count": lead.get("retry_count", 0) + 1
-            }).eq("id", lead_id).execute()
-            
-            return {
-                "lead_id": lead_id,
-                "success": False,
-                "error": result.get("reasoning")
+        result = supabase.rpc(
+            "match_leads",
+            {
+                "query_embedding": embedding_str,
+                "match_batch_id": batch_id
             }
+        ).execute()
         
-        # Update lead with score
-        supabase.table("leads").update({
-            "status": "qualified",
-            "icp_score": result["score"],
-            "match_reasoning": result["reasoning"],
-            "qualified_at": datetime.utcnow().isoformat(),
-            "error_message": None
-        }).eq("id", lead_id).execute()
-        
-        return {
-            "lead_id": lead_id,
-            "success": True,
-            "score": result["score"],
-            "reasoning": result["reasoning"]
-        }
+        leads = result.data or []
+        print(f"[ICP Matcher] Vector search returned {len(leads)} leads")
+        return leads
         
     except Exception as e:
-        print(f"[ICP Matcher] Error qualifying lead {lead_id}: {e}")
-        
-        supabase.table("leads").update({
-            "status": "failed",
-            "error_message": str(e),
-            "retry_count": lead.get("retry_count", 0) + 1
-        }).eq("id", lead_id).execute()
-        
-        return {
-            "lead_id": lead_id,
-            "success": False,
-            "error": str(e)
-        }
+        print(f"[ICP Matcher] Vector search error: {e}")
+        # Fallback: return all enriched leads without ranking
+        result = supabase.table("leads").select("*").eq("batch_id", batch_id).eq("status", "enriched").execute()
+        return result.data or []
 
+
+# =============================================================================
+# Scoring
+# =============================================================================
+
+def similarity_to_score(similarity: float) -> int:
+    """
+    Convert embedding similarity (0-1) to ICP score (0-100).
+    
+    Similarity scores from embeddings are typically in range 0.3-0.9.
+    We normalize this to 0-100 for user-friendly display.
+    """
+    # Clamp to reasonable range
+    similarity = max(0.0, min(1.0, similarity))
+    
+    # Linear mapping: 0.3 -> 0, 0.9 -> 100
+    # Anything below 0.3 is very poor, above 0.9 is excellent
+    if similarity < 0.3:
+        return int(similarity / 0.3 * 30)  # 0-30
+    elif similarity > 0.9:
+        return 100
+    else:
+        # Map 0.3-0.9 to 30-100
+        return int(30 + (similarity - 0.3) / 0.6 * 70)
+
+
+def generate_match_reasoning(lead: Dict[str, Any], score: int, icp: Dict[str, Any]) -> str:
+    """
+    Generate a simple reasoning string for the match.
+    
+    For now, this is template-based. Could be LLM-enhanced later.
+    """
+    name = lead.get("name", "Unknown")
+    titles = lead.get("current_job_titles") or []
+    company = lead.get("company", "Unknown")
+    industry = lead.get("industry", "Unknown")
+    
+    title_str = ", ".join(titles) if titles else "Unknown role"
+    
+    if score >= 80:
+        return f"Strong match: {title_str} at {company} ({industry})"
+    elif score >= 60:
+        return f"Good match: {title_str} at {company} ({industry})"
+    elif score >= 40:
+        return f"Moderate match: {title_str} at {company}"
+    else:
+        return f"Low match: {title_str} at {company}"
+
+
+# =============================================================================
+# Main Qualification Flow
+# =============================================================================
 
 async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
     """
-    Qualify all enriched leads in a batch.
+    Qualify all enriched leads in a batch using embeddings + reranker.
+    
+    Flow:
+    1. Expand ICP criteria (LLM)
+    2. Generate ICP embedding
+    3. Vector search to get all leads ranked by similarity
+    4. Rerank with Jina for final ordering
+    5. Update all leads with scores
     
     Args:
         batch_id: The batch ID to process
@@ -245,25 +204,112 @@ async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
     Returns:
         Dict with counts: qualified, failed
     """
-    # Get all enriched leads in batch
-    result = supabase.table("leads").select("*").eq("batch_id", batch_id).eq("status", "enriched").execute()
+    print(f"\n{'='*60}")
+    print(f"[ICP Matcher] Starting qualification for batch: {batch_id}")
+    print(f"{'='*60}\n")
     
-    leads = result.data or []
-    print(f"[ICP Matcher] Qualifying {len(leads)} leads in batch {batch_id}")
+    # Step 1: Expand ICP
+    print("[Step 1] Expanding ICP criteria...")
+    expanded_icp = expand_icp(icp)
+    
+    # Step 2: Generate ICP embedding
+    print("[Step 2] Generating ICP embedding...")
+    icp_embedding = generate_embedding(expanded_icp)
+    
+    if not icp_embedding:
+        print("[ICP Matcher] Failed to generate ICP embedding")
+        return {"qualified": 0, "failed": 0, "error": "Failed to generate ICP embedding"}
+    
+    # Step 3: Vector search
+    print("[Step 3] Running vector search...")
+    leads = vector_search_leads(icp_embedding, batch_id)
+    
+    if not leads:
+        print("[ICP Matcher] No leads found for qualification")
+        return {"qualified": 0, "failed": 0}
+    
+    # Step 4: Rerank with Jina
+    print(f"[Step 4] Reranking {len(leads)} leads with Jina...")
+    
+    try:
+        reranker = get_reranker("jina")
+        
+        # Prepare documents for reranker (profile text summaries)
+        documents = []
+        lead_ids = []
+        for lead in leads:
+            # Create a text summary for reranking
+            profile_text = create_profile_text(lead)
+            documents.append(profile_text)
+            lead_ids.append(lead["id"])
+        
+        # Rerank (returns ALL leads, no limit)
+        reranked = reranker.rerank(
+            query=expanded_icp,
+            documents=documents,
+            lead_ids=lead_ids
+        )
+        
+        # Build lookup from reranked results
+        rerank_scores = {}
+        for result in reranked:
+            if result.lead_id:
+                rerank_scores[result.lead_id] = result.score
+        
+        print(f"[ICP Matcher] Reranking complete")
+        
+    except Exception as e:
+        print(f"[ICP Matcher] Reranking failed: {e}")
+        print("[ICP Matcher] Falling back to embedding similarity only")
+        rerank_scores = {}
+    
+    # Step 5: Update all leads with scores
+    print(f"[Step 5] Updating {len(leads)} leads...")
     
     qualified = 0
     failed = 0
     
     for lead in leads:
-        result = await qualify_lead(lead, icp)
+        lead_id = lead["id"]
         
-        if result["success"]:
+        try:
+            # Get score from reranker or fall back to embedding similarity
+            if lead_id in rerank_scores:
+                # Reranker scores are 0-1, convert to 0-100
+                raw_score = rerank_scores[lead_id]
+                score = int(raw_score * 100)
+            else:
+                # Use embedding similarity
+                similarity = lead.get("similarity", 0.5)
+                score = similarity_to_score(similarity)
+            
+            # Generate reasoning
+            reasoning = generate_match_reasoning(lead, score, icp)
+            
+            # Update lead
+            supabase.table("leads").update({
+                "status": "qualified",
+                "icp_score": score,
+                "match_reasoning": reasoning,
+                "qualified_at": datetime.utcnow().isoformat(),
+                "error_message": None
+            }).eq("id", lead_id).execute()
+            
             qualified += 1
-            print(f"  → {lead.get('name', 'Unknown')}: {result['score']}/100")
-        else:
+            
+        except Exception as e:
+            print(f"[ICP Matcher] Error updating lead {lead_id}: {e}")
+            supabase.table("leads").update({
+                "status": "failed",
+                "error_message": str(e)[:200]
+            }).eq("id", lead_id).execute()
             failed += 1
     
-    print(f"[ICP Matcher] Batch complete: {qualified} qualified, {failed} failed")
+    print(f"\n{'='*60}")
+    print(f"[ICP Matcher] COMPLETE")
+    print(f"  - Qualified: {qualified}")
+    print(f"  - Failed: {failed}")
+    print(f"{'='*60}\n")
     
     return {
         "qualified": qualified,
@@ -276,24 +322,60 @@ async def re_qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]
     Re-qualify all leads in a batch (even those already qualified).
     
     Useful when ICP criteria have been updated.
-    
-    Args:
-        batch_id: The batch ID to process
-        icp: Updated ICP criteria
-    
-    Returns:
-        Dict with counts
     """
-    # Get all enriched or qualified leads
-    result = supabase.table("leads").select("*").eq("batch_id", batch_id).in_("status", ["enriched", "qualified"]).execute()
-    
-    leads = result.data or []
-    print(f"[ICP Matcher] Re-qualifying {len(leads)} leads in batch {batch_id}")
-    
     # Reset qualified leads to enriched
-    for lead in leads:
-        if lead["status"] == "qualified":
-            supabase.table("leads").update({"status": "enriched"}).eq("id", lead["id"]).execute()
+    result = supabase.table("leads").select("id").eq("batch_id", batch_id).eq("status", "qualified").execute()
+    
+    for lead in (result.data or []):
+        supabase.table("leads").update({"status": "enriched"}).eq("id", lead["id"]).execute()
+    
+    print(f"[ICP Matcher] Reset {len(result.data or [])} leads to enriched")
     
     # Run qualification
     return await qualify_batch(batch_id, icp)
+
+
+# =============================================================================
+# Single Profile Scoring (for testing/debugging)
+# =============================================================================
+
+async def score_profile(lead: Dict[str, Any], icp: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Score a single profile against the ICP.
+    
+    Uses embedding similarity. For debugging/testing only.
+    """
+    try:
+        # Expand ICP and generate embedding
+        expanded_icp = expand_icp(icp)
+        icp_embedding = generate_embedding(expanded_icp)
+        
+        if not icp_embedding:
+            return {"success": False, "score": 0, "reasoning": "Failed to generate ICP embedding"}
+        
+        # Generate profile embedding
+        profile_text = create_profile_text(lead)
+        profile_embedding = generate_embedding(profile_text)
+        
+        if not profile_embedding:
+            return {"success": False, "score": 0, "reasoning": "Failed to generate profile embedding"}
+        
+        # Calculate cosine similarity
+        import math
+        dot_product = sum(a * b for a, b in zip(icp_embedding, profile_embedding))
+        norm1 = math.sqrt(sum(a * a for a in icp_embedding))
+        norm2 = math.sqrt(sum(b * b for b in profile_embedding))
+        similarity = dot_product / (norm1 * norm2) if norm1 and norm2 else 0
+        
+        score = similarity_to_score(similarity)
+        reasoning = generate_match_reasoning(lead, score, icp)
+        
+        return {
+            "success": True,
+            "score": score,
+            "reasoning": reasoning,
+            "similarity": similarity
+        }
+        
+    except Exception as e:
+        return {"success": False, "score": 0, "reasoning": f"Error: {str(e)[:100]}"}
