@@ -5,11 +5,13 @@ from .embeddings import (
     generate_icp_embedding,
     format_embedding_for_postgres
 )
+from .classifier import classify_profile
 
 __all__ = [
     "qualify_batch", 
     "score_profile",
     "generate_profile_embedding",
     "generate_icp_embedding",
-    "format_embedding_for_postgres"
+    "format_embedding_for_postgres",
+    "classify_profile"
 ]

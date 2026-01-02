@@ -43,8 +43,8 @@ uvicorn app.main:app --reload --port 8001
 | 3 | Enrichment (Apify scraping) | ✅ Complete & Tested (20×5 concurrency) |
 | 4a | LangSmith Setup | ✅ Complete (EU endpoint) |
 | 4b | pgvector + Embeddings | ✅ Complete |
-| 4c | LLM Classifier | 🔄 In Progress |
-| 4d | ICP Matching + Reranker | ❌ Not started |
+| 4c | LLM Classifier | ✅ Complete |
+| 4d | ICP Matching + Reranker | 🔄 In Progress |
 | 4e | Evals Framework | ❌ Not started |
 | 5 | CSV Export | 📝 Code written, not tested |
 | 6 | Fathom ICP Sync | ❌ Not started |
@@ -217,13 +217,13 @@ discovered → enriched → qualified → exported
 - [x] Create embeddings.py service
 - [x] Generate embeddings at enrichment time
 
-### Phase 4c: LLM Classifier 🔄
-- [ ] Add classification columns to leads table
-- [ ] Create classifier.py service
-- [ ] Integrate classification into enrichment
-- [ ] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
+### Phase 4c: LLM Classifier ✅
+- [x] Add classification columns to leads table
+- [x] Create classifier.py service
+- [x] Integrate classification into enrichment
+- [x] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
 
-### Phase 4d: ICP Matching + Reranker ❌
+### Phase 4d: ICP Matching + Reranker 🔄
 - [ ] Port query parser (natural language → SQL + semantic query)
 - [ ] Implement hybrid search (SQL filter + vector similarity)
 - [ ] Add Jina reranker integration

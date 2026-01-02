@@ -13,6 +13,7 @@ from datetime import datetime
 from .db.supabase_client import supabase
 from .scraping.apify_scraper import scraper, normalize_linkedin_url, extract_urn_from_url
 from .matching.embeddings import generate_profile_embedding, format_embedding_for_postgres
+from .matching.classifier import classify_profile
 
 
 async def create_leads_from_urls(
@@ -257,6 +258,9 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
             # Generate embedding
             embedding = generate_profile_embedding(lead_for_embedding)
             
+            # Classify profile (industry + company type)
+            classification = classify_profile(lead_for_embedding)
+            
             update_data = {
                 "status": "enriched",
                 "profile_data": profile_data,
@@ -272,6 +276,13 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
             # Add embedding if generated successfully
             if embedding:
                 update_data["embedding"] = format_embedding_for_postgres(embedding)
+            
+            # Add classification if successful
+            if classification:
+                update_data["industry"] = classification.get("industry")
+                update_data["company_type"] = classification.get("company_type")
+                update_data["industry_reasoning"] = classification.get("industry_reasoning")
+                update_data["company_reasoning"] = classification.get("company_reasoning")
             
             supabase.table("leads").update(update_data).eq("id", lead_id).execute()
             
