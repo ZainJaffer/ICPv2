@@ -14,22 +14,30 @@ from bs4 import BeautifulSoup
 
 def normalize_linkedin_url(url: str) -> str:
     """
-    Normalize a LinkedIn URL to canonical format.
+    Normalize a LinkedIn URL, preserving URN case and query parameters.
     
-    Returns: https://www.linkedin.com/in/username
+    LinkedIn exports use URN-style IDs (e.g., ACoAAA9fX4UBcq8K...) which are case-sensitive.
+    The ?miniProfileUrn= query parameter is also needed for scraping.
+    
+    Returns: Full URL with original case and query params preserved
     """
     if not url:
         return ""
     
-    url = url.strip().rstrip('/')
+    url = url.strip()
     
-    # Extract username from various LinkedIn URL formats
-    match = re.search(r'linkedin\.com/in/([^/?#]+)', url.lower())
-    if match:
-        username = match.group(1)
-        return f"https://www.linkedin.com/in/{username}"
+    # Check if it's a LinkedIn profile URL (case-insensitive check)
+    if 'linkedin.com/in/' not in url.lower():
+        return ""
     
-    return ""
+    # Ensure https:// prefix
+    if not url.startswith('http'):
+        url = 'https://' + url
+    
+    # Normalize to www.linkedin.com but preserve the rest (case and query params)
+    url = re.sub(r'https?://(www\.)?linkedin\.com', 'https://www.linkedin.com', url)
+    
+    return url
 
 
 def extract_linkedin_urls(html_content: str) -> List[str]:
@@ -70,13 +78,15 @@ def extract_linkedin_urls(html_content: str) -> List[str]:
     # Method 2: Regex fallback for any URLs in the raw HTML
     # This catches URLs that might not be in proper anchor tags
     try:
-        # Match linkedin.com/in/username patterns
-        pattern = r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9_-]+)'
-        matches = re.findall(pattern, html_content, re.IGNORECASE)
+        # Match full LinkedIn profile URLs with optional query params
+        # Preserve original case for URN-style IDs
+        pattern = r'https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9_-]+(?:\?[^"\s<>]*)?'
+        matches = re.findall(pattern, html_content)
         
-        for username in matches:
-            normalized = f"https://www.linkedin.com/in/{username.lower()}"
-            urls.add(normalized)
+        for url in matches:
+            normalized = normalize_linkedin_url(url)
+            if normalized:
+                urls.add(normalized)
     
     except Exception as e:
         print(f"[Parser] Regex parsing error: {e}")

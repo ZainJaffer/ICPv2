@@ -40,7 +40,7 @@ uvicorn app.main:app --reload --port 8001
 | 0 | Project Setup | ✅ Complete |
 | 1 | Database Schema | ✅ Complete |
 | 2 | HTML Ingestion | ✅ Complete & Tested |
-| 3 | Enrichment (Apify scraping) | 📝 Code written, not tested |
+| 3 | Enrichment (Apify scraping) | ✅ Tested (5 profiles) |
 | 4 | ICP Qualification (LLM scoring) | 📝 Code written, not tested |
 | 5 | CSV Export | 📝 Code written, not tested |
 | 6 | Fathom ICP Sync | ❌ Not started |
@@ -90,9 +90,10 @@ ICPv2/
 │       ├── enrichment.py       # Batch enrichment logic
 │       ├── icp_matcher.py      # LLM-based ICP scoring
 │       └── profile_id_utils.py # LinkedIn ID utilities
-├── inputs/                     # HTML files to process
+├── inputs/                     # HTML files to process (gitignored)
 ├── outputs/                    # Generated CSVs
-├── scripts/                    # CLI utilities
+├── scripts/
+│   └── process_html.py         # CLI helper for batch processing
 ├── requirements.txt
 └── README.md
 ```
@@ -137,152 +138,16 @@ discovered → enriched → qualified → exported
 
 ---
 
-## Core Services
+## Database Tables
 
-### A. Fathom ICP Sync
-
-**Purpose:** Extract client ICP from their Fathom call transcripts
-
-**Logic:**
-- Connects to Fathom API
-- Fetches transcripts for a specific client
-- Uses LLM with Instructor to extract structured ICP
-- **Expands** criteria over time (accumulates, doesn't replace)
-
-```python
-class ClientICP(BaseModel):
-    client_id: uuid
-    target_titles: list[str]
-    target_industries: list[str]
-    company_sizes: list[str]
-```
-
-### B. HTML Ingestion
-
-**Purpose:** Extract LinkedIn URLs from exported HTML files
-
-**Endpoint:**
-```python
-@app.post("/clients/{client_id}/ingest")
-async def ingest_html(client_id: uuid, file: UploadFile):
-    urls = extract_linkedin_urls(await file.read())
-    # Create leads in Supabase with status 'discovered'
-    return {"leads_created": len(urls)}
-```
-
-### C. Enrichment Service
-
-**Purpose:** Scrape full profile data for discovered leads
-
-**Logic:**
-1. Query Supabase for leads in `discovered` status
-2. Check cache - if profile scraped within 30 days, skip API call
-3. Call internal scraper for fresh profiles
-4. Store result in Supabase
-5. Update status to `enriched`
-
-### D. Qualification Service (The Matcher)
-
-**Purpose:** Score enriched profiles against client's ICP
-
-**Logic:**
-1. Load client's ICP definition
-2. For each `enriched` lead, compare profile to ICP
-3. Generate score (0-100) and reasoning via LLM
-4. Update status to `qualified`
-
-```python
-class ICPMatch(BaseModel):
-    score: int = Field(ge=0, le=100)
-    reasoning: str
-```
-
-### E. Export Service
-
-**Purpose:** Generate CSV of qualified leads
-
-**Output Format:**
-| Name | Profile URL | Title | Company | ICP Score | Match Reasoning |
-|------|-------------|-------|---------|-----------|-----------------|
-
----
-
-## Supabase Schema
-
-```sql
--- Clients
-CREATE TABLE clients (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- ICP Definitions (per client, accumulates over time)
-CREATE TABLE client_icps (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id UUID REFERENCES clients(id),
-    target_titles TEXT[] DEFAULT '{}',
-    target_industries TEXT[] DEFAULT '{}',
-    company_sizes TEXT[] DEFAULT '{}',
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Fathom call log (tracks which calls have been processed)
-CREATE TABLE fathom_calls (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id UUID REFERENCES clients(id),
-    fathom_call_id TEXT UNIQUE NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Batches (each HTML upload)
-CREATE TABLE batches (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id UUID REFERENCES clients(id),
-    filename TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    status TEXT DEFAULT 'processing'
-);
-
--- Leads
-CREATE TABLE leads (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id UUID REFERENCES clients(id),
-    batch_id UUID REFERENCES batches(id),
-    linkedin_url TEXT NOT NULL,
-    public_identifier TEXT,
-    status TEXT DEFAULT 'discovered',
-    retry_count INT DEFAULT 0,
-    
-    -- Enriched data (cached)
-    profile_data JSONB,
-    scraped_at TIMESTAMPTZ,
-    
-    -- Qualification results
-    icp_score INT,
-    match_reasoning TEXT,
-    qualified_at TIMESTAMPTZ,
-    
-    -- Timestamps
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    
-    UNIQUE(client_id, linkedin_url)
-);
-
--- Profile cache (shared across clients)
-CREATE TABLE profile_cache (
-    linkedin_url TEXT PRIMARY KEY,
-    public_identifier TEXT,
-    profile_data JSONB NOT NULL,
-    scraped_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX idx_leads_status ON leads(client_id, status);
-CREATE INDEX idx_leads_batch ON leads(batch_id);
-CREATE INDEX idx_profile_cache_scraped ON profile_cache(scraped_at);
-```
+| Table | Purpose |
+|-------|---------|
+| `clients` | Client records (name, created_at) |
+| `client_icps` | ICP criteria per client (target_titles, industries, company_sizes) |
+| `batches` | HTML upload batches per client |
+| `leads` | Individual profiles to qualify (status, profile_data, icp_score) |
+| `profile_cache` | Shared cache of scraped profiles (30-day TTL) |
+| `fathom_calls` | Tracks processed Fathom calls (Phase 6) |
 
 ---
 
@@ -306,12 +171,14 @@ CREATE INDEX idx_profile_cache_scraped ON profile_cache(scraped_at);
 - [x] Lead creation with deduplication
 - [x] Endpoint: `POST /clients/{id}/ingest`
 
-### Phase 3: Enrichment Service 📝
-- [x] Apify scraper integration (code written)
+### Phase 3: Enrichment Service ✅
+- [x] Apify scraper integration
 - [x] Cache check logic (30-day TTL)
+- [x] URN matching fix (preserve case, match by profileId)
 - [x] Status updates
-- [x] Endpoint: `POST /batches/{id}/enrich`
-- [ ] **Testing pending**
+- [x] Endpoint: `POST /batches/{id}/enrich?limit=N`
+- [x] **Tested with 5 profiles**
+- [ ] **TODO: Add chunking + concurrency (20 actors × 5 URLs)**
 
 ### Phase 4: Qualification Service 📝
 - [x] ICP matching prompt with GPT-5-mini
@@ -337,30 +204,18 @@ CREATE INDEX idx_profile_cache_scraped ON profile_cache(scraped_at);
 
 1. **Async everywhere** - Use `httpx.AsyncClient` for all external API calls
 2. **Stateless processing** - Supabase is the source of truth; server can restart and resume
-3. **Batching** - Process profiles in small batches to respect rate limits
-4. **Structured outputs** - Always use Instructor + Pydantic for LLM calls
-5. **Cache aggressively** - Don't scrape the same profile twice within 30 days
-6. **Fail gracefully** - Track retry_count, mark as failed after 3 attempts
+3. **Cache aggressively** - Don't scrape the same profile twice within 30 days
+4. **Fail gracefully** - Track retry_count, mark as failed after 3 attempts
 
 ---
 
 ## Environment Variables
 
 ```env
-# Supabase
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=your_service_role_key
-
-# Fathom
-FATHOM_API_KEY=your_fathom_key
-
-# LLM
+APIFY_API_TOKEN=your_apify_token
 OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
-
-# Internal Scraper
-SCRAPER_BASE_URL=https://your-scraper.com
-SCRAPER_API_KEY=your_scraper_key
 ```
 
 ---

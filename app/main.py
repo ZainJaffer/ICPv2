@@ -4,6 +4,9 @@ LinkedIn Qualifier v1 - FastAPI Application
 Headless API for qualifying LinkedIn followers against client-specific ICPs.
 """
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before anything else
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

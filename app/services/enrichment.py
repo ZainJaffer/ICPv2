@@ -7,7 +7,7 @@ Handles:
 - Profile data extraction and storage
 """
 
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime
 
 from .supabase_client import supabase
@@ -182,38 +182,96 @@ async def enrich_lead(lead: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-async def enrich_batch(batch_id: str) -> Dict[str, int]:
+async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, int]:
     """
-    Enrich all discovered leads in a batch.
+    Enrich discovered leads in a batch using batch scraping.
     
     Args:
         batch_id: The batch ID to process
+        limit: Max leads to process (for testing)
     
     Returns:
         Dict with counts: enriched, from_cache, failed
     """
-    # Get all discovered leads in batch
-    result = supabase.table("leads").select("*").eq("batch_id", batch_id).eq("status", "discovered").execute()
+    print(f"\n{'='*60}", flush=True)
+    print(f"[Enrichment] Starting batch: {batch_id}", flush=True)
+    if limit:
+        print(f"[Enrichment] Limit: {limit} profiles", flush=True)
+    print(f"{'='*60}\n", flush=True)
+    
+    # Get discovered leads in batch
+    print("[Step 1] Fetching discovered leads from Supabase...", flush=True)
+    query = supabase.table("leads").select("*").eq("batch_id", batch_id).eq("status", "discovered")
+    if limit:
+        query = query.limit(limit)
+    result = query.execute()
     
     leads = result.data or []
-    print(f"[Enrichment] Processing {len(leads)} leads in batch {batch_id}")
+    print(f"[Step 1] Found {len(leads)} leads to process\n", flush=True)
     
+    if not leads:
+        return {"enriched": 0, "from_cache": 0, "failed": 0}
+    
+    # Build URL list and lead lookup
+    urls = []
+    lead_by_url = {}
+    for lead in leads:
+        url = normalize_linkedin_url(lead.get("linkedin_url", ""))
+        urls.append(url)
+        lead_by_url[url] = lead
+    
+    # Batch scrape all URLs in one Apify call
+    print("[Step 2] Scraping profiles via Apify (batch mode)...", flush=True)
+    scrape_results = await scraper.scrape_profiles_batch(urls)
+    
+    # Process results and update leads
+    print("\n[Step 3] Updating leads in Supabase...", flush=True)
     enriched = 0
     from_cache = 0
     failed = 0
     
-    for lead in leads:
-        result = await enrich_lead(lead)
+    for url, result in scrape_results.items():
+        lead = lead_by_url.get(url)
+        if not lead:
+            continue
         
-        if result["success"]:
+        lead_id = lead["id"]
+        
+        if result.get("success"):
+            profile_data = result.get("profile_data", {})
+            fields = extract_profile_fields(profile_data)
+            
+            update_data = {
+                "status": "enriched",
+                "profile_data": profile_data,
+                "name": fields.get("name"),
+                "headline": fields.get("headline"),
+                "company": fields.get("company"),
+                "location": fields.get("location"),
+                "follower_count": fields.get("follower_count"),
+                "scraped_at": datetime.utcnow().isoformat(),
+                "error_message": None
+            }
+            supabase.table("leads").update(update_data).eq("id", lead_id).execute()
+            
             if result.get("from_cache"):
                 from_cache += 1
             else:
                 enriched += 1
         else:
+            supabase.table("leads").update({
+                "status": "failed",
+                "error_message": result.get("error", "Unknown error"),
+                "retry_count": lead.get("retry_count", 0) + 1
+            }).eq("id", lead_id).execute()
             failed += 1
     
-    print(f"[Enrichment] Batch complete: {enriched} enriched, {from_cache} from cache, {failed} failed")
+    print(f"\n{'='*60}", flush=True)
+    print(f"[Enrichment] COMPLETE", flush=True)
+    print(f"  - Scraped: {enriched}", flush=True)
+    print(f"  - From cache: {from_cache}", flush=True)
+    print(f"  - Failed: {failed}", flush=True)
+    print(f"{'='*60}\n", flush=True)
     
     return {
         "enriched": enriched,

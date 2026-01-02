@@ -33,27 +33,28 @@ CACHE_TTL_DAYS = 30
 
 def normalize_linkedin_url(url: str) -> str:
     """
-    Normalize a LinkedIn URL to canonical format: https://www.linkedin.com/in/username
+    Normalize a LinkedIn URL, preserving URN case and query parameters.
     
-    Handles all variations:
-    - linkedin.com/in/user
-    - www.linkedin.com/in/user  
-    - http://linkedin.com/in/user
-    - https://linkedin.com/in/user
-    - https://www.linkedin.com/in/user/
+    LinkedIn exports use URN-style IDs (e.g., ACoAAA9fX4UBcq8K...) which are case-sensitive.
+    The ?miniProfileUrn= query parameter is also needed for scraping.
     
-    Returns the canonical format or original URL if not a valid LinkedIn profile URL.
+    Returns: Full URL with original case and query params preserved
     """
     if not url:
         return url
     
-    url = url.strip().rstrip('/')
+    url = url.strip()
     
-    # Extract username from LinkedIn URL
-    match = re.search(r'linkedin\.com/in/([^/?#]+)', url.lower())
-    if match:
-        username = match.group(1)
-        return f"https://www.linkedin.com/in/{username}"
+    # Check if it's a LinkedIn profile URL (case-insensitive check)
+    if 'linkedin.com/in/' not in url.lower():
+        return url
+    
+    # Ensure https:// prefix
+    if not url.startswith('http'):
+        url = 'https://' + url
+    
+    # Normalize to www.linkedin.com but preserve the rest (case and query params)
+    url = re.sub(r'https?://(www\.)?linkedin\.com', 'https://www.linkedin.com', url)
     
     return url
 
@@ -260,6 +261,142 @@ class ApifyScraper:
                 "profile_data": None,
                 "run_id": run_id
             }
+    
+    async def scrape_profiles_batch(self, urls: List[str]) -> Dict[str, Any]:
+        """
+        Scrape multiple LinkedIn profiles in a single Apify call.
+        Checks cache first, only sends uncached URLs to Apify.
+        
+        Args:
+            urls: List of LinkedIn profile URLs
+        
+        Returns:
+            Dict with results for each URL
+        """
+        results = {}
+        urls_to_scrape = []
+        
+        print(f"\n[Scraper] Batch: Checking cache for {len(urls)} URLs...", flush=True)
+        
+        # Check cache for each URL
+        for url in urls:
+            normalized_url = normalize_linkedin_url(url)
+            cached_data = self.check_cache(normalized_url)
+            
+            if cached_data:
+                results[normalized_url] = {
+                    "success": True,
+                    "from_cache": True,
+                    "profile_data": cached_data
+                }
+            else:
+                urls_to_scrape.append(normalized_url)
+        
+        print(f"[Scraper] Batch: {len(results)} from cache, {len(urls_to_scrape)} to scrape", flush=True)
+        
+        if not urls_to_scrape:
+            return results
+        
+        # Build URN → URL lookup for matching results back
+        urn_to_url = {}
+        for url in urls_to_scrape:
+            match = re.search(r'/in/([^/?]+)', url)
+            if match:
+                urn = match.group(1)
+                urn_to_url[urn] = url
+        
+        # Scrape all uncached URLs in one Apify call
+        run_id = None
+        try:
+            actor_input = {
+                "urls": [{"url": url} for url in urls_to_scrape],
+                "scrapeCompany": False,
+                "findContacts": False,
+            }
+            
+            timeout_mins = APIFY_TIMEOUT_SECONDS // 60
+            print(f"[Scraper] Batch: Starting Apify for {len(urls_to_scrape)} profiles... (timeout: {timeout_mins} min)", flush=True)
+            
+            actor_client = self.client.actor(self.profile_actor_id)
+            run_info = await actor_client.start(run_input=actor_input)
+            run_id = run_info.get("id") if run_info else None
+            
+            if run_id:
+                print(f"[Scraper] Batch: Actor run ID: {run_id}", flush=True)
+            else:
+                raise Exception("Failed to start actor run - no run ID returned")
+            
+            run_client = self.client.run(run_id)
+            call_result = await run_client.wait_for_finish(wait_secs=APIFY_TIMEOUT_SECONDS)
+            
+            if call_result is None:
+                print(f"[Scraper] Batch: TIMEOUT after {timeout_mins} min", flush=True)
+                for url in urls_to_scrape:
+                    results[url] = {"success": False, "error": "Timeout", "from_cache": False, "profile_data": None}
+                return results
+            
+            print(f"[Scraper] Batch: Actor finished with status: {call_result.get('status')}", flush=True)
+            
+            if call_result.get("status") != "SUCCEEDED":
+                raise Exception(f"Actor run failed: {call_result.get('status')}")
+            
+            # Fetch results from dataset
+            dataset_id = call_result.get("defaultDatasetId")
+            if not dataset_id:
+                raise Exception("No dataset ID returned")
+            
+            print(f"[Scraper] Batch: Fetching from dataset: {dataset_id}", flush=True)
+            dataset_client = self.client.dataset(dataset_id)
+            await asyncio.sleep(2)
+            
+            profiles = []
+            try:
+                list_items_result = await dataset_client.list_items()
+                if hasattr(list_items_result, 'items') and list_items_result.items:
+                    profiles = list(list_items_result.items)
+                elif isinstance(list_items_result, dict) and 'items' in list_items_result:
+                    profiles = list_items_result['items']
+                elif isinstance(list_items_result, list):
+                    profiles = list_items_result
+            except Exception as e:
+                print(f"[Scraper] Batch: list_items failed: {e}", flush=True)
+            
+            print(f"[Scraper] Batch: Got {len(profiles)} profiles", flush=True)
+            
+            # Match profiles to URLs using URN
+            for profile in profiles:
+                # Get URN from profile data
+                profile_urn = get_profile_id_from_profile(profile)
+                
+                # Find original URL using URN lookup
+                original_url = urn_to_url.get(profile_urn) if profile_urn else None
+                
+                if original_url:
+                    self.save_to_cache(original_url, profile)
+                    results[original_url] = {
+                        "success": True,
+                        "from_cache": False,
+                        "profile_data": profile
+                    }
+                    print(f"[Scraper] Batch: Matched {profile_urn[:20]}... → {profile.get('firstName', '')} {profile.get('lastName', '')}", flush=True)
+            
+            # Mark any URLs we didn't get results for as failed
+            for url in urls_to_scrape:
+                if url not in results:
+                    results[url] = {"success": False, "error": "No data returned", "from_cache": False, "profile_data": None}
+            
+            return results
+            
+        except Exception as e:
+            print(f"[Scraper] Batch ERROR: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            
+            for url in urls_to_scrape:
+                if url not in results:
+                    results[url] = {"success": False, "error": str(e), "from_cache": False, "profile_data": None}
+            
+            return results
     
     # ============================================
     # Posts Scraping (for future use)

@@ -99,11 +99,12 @@ async def get_batch(batch_id: str):
 
 
 @router.post("/{batch_id}/enrich", response_model=EnrichResponse)
-async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks):
+async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks, limit: Optional[int] = None):
     """
-    Scrape LinkedIn profiles for all discovered leads in batch.
+    Scrape LinkedIn profiles for discovered leads in batch.
     
-    Runs in background - check batch status for progress.
+    Args:
+        limit: Max profiles to scrape (for testing). Omit to process all.
     """
     try:
         # Verify batch exists
@@ -130,7 +131,7 @@ async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks
         supabase.table("batches").update({"status": "enriching"}).eq("id", batch_id).execute()
         
         # Run enrichment (can be moved to background for large batches)
-        result = await enrich_batch(batch_id)
+        result = await enrich_batch(batch_id, limit=limit)
         
         # Update batch status
         supabase.table("batches").update({
