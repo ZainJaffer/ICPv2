@@ -236,12 +236,29 @@ async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
         )
         
         # Build lookup from reranked results
-        rerank_scores = {}
+        raw_scores = {}
         for result in reranked:
             if result.lead_id:
-                rerank_scores[result.lead_id] = result.score
+                raw_scores[result.lead_id] = result.score
         
-        print(f"[ICP Matcher] Reranking complete - {len(rerank_scores)} scores")
+        # Normalize scores to a reasonable range (25-85)
+        # Reranker scores are relative, not absolute, so we scale them
+        if raw_scores:
+            max_score = max(raw_scores.values())
+            min_score = min(raw_scores.values())
+            score_range = max_score - min_score if max_score > min_score else 1.0
+            
+            rerank_scores = {}
+            for lead_id, raw in raw_scores.items():
+                # Normalize to 0-1 within this batch
+                normalized = (raw - min_score) / score_range if score_range > 0 else 0.5
+                # Scale to 25-85 range (best gets 85, worst gets 25)
+                rerank_scores[lead_id] = 25 + (normalized * 60)
+            
+            print(f"[ICP Matcher] Reranking complete - {len(rerank_scores)} scores (raw: {min_score:.3f}-{max_score:.3f})")
+        else:
+            rerank_scores = {}
+            print(f"[ICP Matcher] Reranking complete - no scores")
         
     except Exception as e:
         print(f"[ICP Matcher] Reranking failed: {e}")
@@ -258,13 +275,11 @@ async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
         lead_id = lead["id"]
         
         try:
-            # Get score from reranker or fall back to embedding similarity
+            # Get score from reranker (already normalized to 25-85) or fall back
             if lead_id in rerank_scores:
-                # Reranker scores are 0-1, convert to 0-100
-                raw_score = rerank_scores[lead_id]
-                score = int(raw_score * 100)
+                score = int(rerank_scores[lead_id])
             else:
-                # Use embedding similarity
+                # Use embedding similarity as fallback
                 similarity = lead.get("similarity", 0.5)
                 score = similarity_to_score(similarity)
             

@@ -25,11 +25,14 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     
     Order is critical for ICP matching - job titles FIRST since that's
     the primary matching criterion, followed by industry/company.
+    
+    Uses CLEANED current_job_titles, not raw positions (which may be malformed).
     """
     parts = []
     profile_data = lead.get("profile_data", {}) or {}
     
     # 1. CURRENT JOB TITLES FIRST (most important for ICP matching)
+    # Use cleaned titles from lead, not raw positions
     current_job_titles = lead.get("current_job_titles") or []
     if current_job_titles:
         parts.append(f"Job titles: {', '.join(current_job_titles)}")
@@ -50,37 +53,6 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     
     if lead.get("location"):
         parts.append(f"Location: {lead['location']}")
-    
-    # 4. Current positions with descriptions
-    positions = profile_data.get("positions", [])
-    if positions:
-        current_positions = []
-        past_positions = []
-        
-        for pos in positions:
-            time_period = pos.get("timePeriod", {}) or {}
-            end_date = time_period.get("endDate")
-            
-            title = pos.get("title", "")
-            company = pos.get("company", {})
-            company_name = company.get("name") if isinstance(company, dict) else company
-            description = pos.get("description", "")
-            
-            if title:
-                position_text = f"{title} at {company_name}" if company_name else title
-                if description:
-                    position_text += f". {description}"
-                
-                if end_date is None:
-                    current_positions.append(position_text)
-                else:
-                    past_positions.append(position_text)
-        
-        if current_positions:
-            parts.append("Current roles: " + " | ".join(current_positions))
-        
-        if past_positions:
-            parts.append("Previous: " + " | ".join(past_positions[:2]))
     
     # 5. Summary
     if profile_data.get("summary"):

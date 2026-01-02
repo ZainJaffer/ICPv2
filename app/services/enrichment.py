@@ -67,14 +67,35 @@ def extract_profile_fields(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract key fields from raw profile data for the leads table.
     
-    Args:
-        profile_data: Raw profile JSON from Apify
-    
-    Returns:
-        Dict with extracted fields
+    Handles malformed Apify data where title and company are swapped:
+    - If company.name is a duration (e.g., "8 yrs 1 mo"), title is likely the company
+    - If company.name is "Full-time" or similar, title is likely the company
     """
     if not profile_data:
         return {}
+    
+    def is_duration_or_junk(text: str) -> bool:
+        """Check if text is a duration or junk value, not a real company/title."""
+        if not text:
+            return False  # Empty/None is not "junk", just missing
+        text_lower = text.lower().strip()
+        # Duration patterns
+        if any(x in text_lower for x in ["yrs", "mos", " yr", " mo", "year", "month"]):
+            return True
+        # Junk values
+        if text_lower in ["full-time", "part-time", "contract", "self-employed", "freelance"]:
+            return True
+        return False
+    
+    def looks_like_company_name(text: str) -> bool:
+        """Check if text looks more like a company name than a job title."""
+        if not text:
+            return False
+        text_lower = text.lower()
+        # Universities, Inc, LLC, etc. are companies
+        company_indicators = ["university", "college", " inc", " llc", " ltd", " corp", 
+                            "diagnostics", "solutions", "technologies", "consulting"]
+        return any(ind in text_lower for ind in company_indicators)
     
     # Build name from first/last
     first_name = profile_data.get("firstName", "").strip()
@@ -87,69 +108,54 @@ def extract_profile_fields(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     # Get positions for extracting company and job titles
     positions = profile_data.get("positions", [])
     
-    # Get ALL current job titles (endDate is null = currently working)
+    # Extract current job titles and company, handling swapped data
     current_job_titles = []
     current_company = None
     
     for pos in positions:
         time_period = pos.get("timePeriod", {}) or {}
-        if time_period.get("endDate") is None:  # Current position
-            title = pos.get("title")
-            if title:
-                current_job_titles.append(title)
+        if time_period.get("endDate") is not None:  # Not current, skip
+            continue
             
-            # Use first current position's company as primary
-            if current_company is None:
-                company_obj = pos.get("company", {})
-                if isinstance(company_obj, dict):
-                    current_company = company_obj.get("name")
-                elif isinstance(company_obj, str):
-                    current_company = company_obj
-    
-    # Fallback to companyName field or first position if no current found
-    company = current_company or profile_data.get("companyName")
-    if not company and positions:
-        company_obj = positions[0].get("company", {})
+        title = pos.get("title", "").strip()
+        company_obj = pos.get("company", {})
+        company_name = ""
         if isinstance(company_obj, dict):
-            company = company_obj.get("name")
+            company_name = company_obj.get("name", "").strip()
         elif isinstance(company_obj, str):
-            company = company_obj
-    
-    # Filter out invalid company names (durations like "8 yrs 1 mo")
-    def is_duration(text):
-        if not text:
-            return False
-        text_lower = text.lower()
-        return ("yrs" in text_lower or "mos" in text_lower or " mo" in text_lower or 
-                text_lower.endswith(" yr") or text_lower.endswith(" mo"))
-    
-    if is_duration(company):
-        # This looks like a duration, not a company name
-        # Apify sometimes swaps title and company - check if any title looks like a company
-        company = None
-        for pos in positions:
-            time_period = pos.get("timePeriod", {}) or {}
-            if time_period.get("endDate") is None:  # Current position
-                title = pos.get("title", "")
-                company_obj = pos.get("company", {})
-                company_name = company_obj.get("name") if isinstance(company_obj, dict) else company_obj
-                
-                # If company is a duration but title looks like a company name, swap them
-                if is_duration(company_name) and title and not is_duration(title):
-                    company = title  # Use title as company (it's probably reversed)
-                    break
+            company_name = company_obj.strip()
         
-        # Still no company? Try profile-level companyName
-        if not company:
-            company = profile_data.get("companyName")
-            if is_duration(company):
-                company = None
+        # Detect swapped data: company.name is duration/junk, title is the real company
+        if is_duration_or_junk(company_name):
+            # Title is probably the company name, not a job title
+            if title and not is_duration_or_junk(title):
+                if current_company is None:
+                    current_company = title
+            # Don't add this "title" to job titles - it's actually a company
+            continue
+        
+        # Detect company name in title field (e.g., "Stanford University" as title)
+        if looks_like_company_name(title) and not looks_like_company_name(company_name):
+            # Likely swapped - title is company, company is junk
+            if current_company is None:
+                current_company = title
+            continue
+        
+        # Normal case: title is a real job title
+        if title and not is_duration_or_junk(title):
+            current_job_titles.append(title)
+        
+        # Use first valid company
+        if current_company is None and company_name and not is_duration_or_junk(company_name):
+            current_company = company_name
     
-    # Fallback job titles to first position if no current found
-    if not current_job_titles and positions:
-        first_title = positions[0].get("title")
-        if first_title:
-            current_job_titles.append(first_title)
+    # Fallback to companyName field if no current company found
+    company = current_company or profile_data.get("companyName")
+    
+    # Fallback job titles from headline if none found
+    if not current_job_titles and headline:
+        # Don't use headline as title, just leave empty
+        pass
     
     # Get location
     location = profile_data.get("geoLocationName") or profile_data.get("locationName")
