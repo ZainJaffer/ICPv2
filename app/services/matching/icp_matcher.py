@@ -40,7 +40,7 @@ Name: {name}
 Headline: {headline}
 Company: {company}
 Location: {location}
-Current Job Title: {current_job_title}
+Current Job Titles: {current_job_titles}
 
 Full Profile Data:
 {profile_summary}
@@ -135,7 +135,7 @@ async def score_profile(
             headline=lead.get("headline", "Not available"),
             company=lead.get("company", "Not available"),
             location=lead.get("location", "Not available"),
-            current_job_title=lead.get("current_job_title", "Not available"),
+            current_job_titles=", ".join(lead.get("current_job_titles") or ["Not available"]),
             profile_summary=create_profile_summary(profile_data)
         )
         

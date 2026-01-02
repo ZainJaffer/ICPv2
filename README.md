@@ -131,7 +131,7 @@ Client (e.g., "Carl Seidman")
         ├── headline: "CFO | Finance Leader | Board Member"
         ├── company: "TechStartup Inc"
         ├── location: "San Francisco, CA"
-        ├── current_job_title: "Chief Financial Officer"  # From positions[0]
+        ├── current_job_titles: ["CFO", "Board Member"]  # ALL current positions
         │
         ├── # Raw data
         ├── profile_data: {...}           # Full Apify response (positions, skills, etc.)
@@ -197,7 +197,7 @@ name                text
 headline            text
 company             text
 location            text
-current_job_title   text  -- From positions[0].title (critical for ICP matching)
+current_job_titles  jsonb -- ALL current titles (where endDate is null)
 profile_data        jsonb -- Full Apify response
 
 -- Generated at enrichment time
@@ -312,14 +312,14 @@ The qualification pipeline uses embeddings + reranker for semantic matching:
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  2. VECTOR SEARCH (pgvector)                                    │
-│     Generate ICP embedding, find top 50 similar leads           │
+│     Generate ICP embedding, score ALL leads in batch            │
 │     cosine_similarity(lead.embedding, icp.embedding)            │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  3. RERANKER (Jina)                                             │
-│     Cross-encoder rescores top 50 with full profile context     │
-│     → Returns final ranked list with scores                     │
+│     Cross-encoder rescores ALL leads with full profile context  │
+│     → Returns ALL leads ranked by ICP fit                       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -399,7 +399,7 @@ LinkedIn profiles often have multiple positions listed. We prioritize **current 
 | `name` | firstName + lastName | Display |
 | `headline` | profile.headline | Embedding + display |
 | `company` | First current position's company | Display |
-| `current_job_title` | First current position's title | **Key for ICP matching** |
+| `current_job_titles` | ALL current positions' titles (array) | **Key for ICP matching** |
 | `location` | geoLocationName | Embedding |
 | `profile_data` | Full Apify response | Embedding (positions, skills, summary) |
 

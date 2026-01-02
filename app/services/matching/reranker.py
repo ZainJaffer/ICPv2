@@ -33,7 +33,7 @@ class BaseReranker(ABC):
         self, 
         query: str, 
         documents: List[str], 
-        top_n: int = 10,
+        top_n: Optional[int] = None,
         lead_ids: Optional[List[str]] = None
     ) -> List[RankedResult]:
         """
@@ -42,7 +42,7 @@ class BaseReranker(ABC):
         Args:
             query: The search query (ICP description)
             documents: List of document texts (profile summaries)
-            top_n: Number of top results to return
+            top_n: Number of results to return (None = return ALL)
             lead_ids: Optional list of lead IDs matching documents
         
         Returns:
@@ -76,7 +76,7 @@ class JinaReranker(BaseReranker):
         self, 
         query: str, 
         documents: List[str], 
-        top_n: int = 10,
+        top_n: Optional[int] = None,
         lead_ids: Optional[List[str]] = None
     ) -> List[RankedResult]:
         """Rerank using Jina API."""
@@ -84,8 +84,11 @@ class JinaReranker(BaseReranker):
         if not documents:
             return []
         
-        # Cap top_n to number of documents
-        top_n = min(top_n, len(documents))
+        # If top_n not specified, return ALL documents
+        if top_n is None:
+            top_n = len(documents)
+        else:
+            top_n = min(top_n, len(documents))
         
         try:
             response = httpx.post(
@@ -145,12 +148,15 @@ class NoOpReranker(BaseReranker):
         self, 
         query: str, 
         documents: List[str], 
-        top_n: int = 10,
+        top_n: Optional[int] = None,
         lead_ids: Optional[List[str]] = None
     ) -> List[RankedResult]:
         """Return documents in original order with default scores."""
+        # If top_n not specified, return ALL documents
+        docs_to_process = documents if top_n is None else documents[:top_n]
+        
         results = []
-        for i, doc in enumerate(documents[:top_n]):
+        for i, doc in enumerate(docs_to_process):
             results.append(RankedResult(
                 index=i,
                 text=doc,

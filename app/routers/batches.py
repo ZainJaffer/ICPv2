@@ -278,7 +278,7 @@ async def export_batch(batch_id: str, min_score: int = 0):
                 lead.get("headline", ""),
                 lead.get("company", ""),
                 lead.get("location", ""),
-                lead.get("current_job_title", ""),
+                ", ".join(lead.get("current_job_titles") or []),
                 lead.get("icp_score", ""),
                 lead.get("match_reasoning", "")
             ])
@@ -311,15 +311,27 @@ async def export_batch(batch_id: str, min_score: int = 0):
 
 
 @router.get("/{batch_id}/leads")
-async def list_batch_leads(batch_id: str, status: Optional[str] = None, limit: int = 100):
-    """List leads in a batch with optional status filter."""
+async def list_batch_leads(batch_id: str, status: Optional[str] = None, limit: Optional[int] = None):
+    """
+    List leads in a batch with optional status filter.
+    
+    Args:
+        batch_id: The batch ID
+        status: Optional status filter (discovered, enriched, qualified, etc.)
+        limit: Optional limit on results (default: return ALL leads)
+    """
     try:
         query = supabase.table("leads").select("*").eq("batch_id", batch_id)
         
         if status:
             query = query.eq("status", status)
         
-        result = query.order("icp_score", desc=True).limit(limit).execute()
+        query = query.order("icp_score", desc=True)
+        
+        if limit:
+            query = query.limit(limit)
+        
+        result = query.execute()
         
         return {
             "leads": result.data,
