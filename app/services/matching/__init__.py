@@ -6,6 +6,7 @@ from .embeddings import (
     format_embedding_for_postgres
 )
 from .classifier import classify_profile
+from .reranker import get_reranker, JinaReranker, BaseReranker
 
 __all__ = [
     "qualify_batch", 
@@ -13,5 +14,8 @@ __all__ = [
     "generate_profile_embedding",
     "generate_icp_embedding",
     "format_embedding_for_postgres",
-    "classify_profile"
+    "classify_profile",
+    "get_reranker",
+    "JinaReranker",
+    "BaseReranker"
 ]

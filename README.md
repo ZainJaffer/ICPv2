@@ -224,12 +224,14 @@ discovered → enriched → qualified → exported
 - [x] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
 
 ### Phase 4d: ICP Matching + Reranker 🔄
-- [ ] Expand ICP criteria via LLM for richer embeddings
-- [ ] Vector similarity search (pgvector)
-- [ ] Add Jina reranker integration
+- [x] Jina reranker integration (`reranker.py` with modular design)
+- [ ] Expand ICP criteria via LLM for richer embeddings (optional)
+- [ ] Vector similarity search function (pgvector)
+- [ ] Update `icp_matcher.py` to use embeddings + reranker
 - [ ] Update `POST /batches/{id}/qualify` endpoint
 
 **Note:** SQL filtering skipped - batch sizes (10-1000) are small enough for embeddings-only approach.
+Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testing via LangSmith.
 
 ### Phase 4e: Evals Framework ❌
 - [ ] Create test dataset (20-50 known profile matches)
