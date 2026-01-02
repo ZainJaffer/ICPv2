@@ -84,29 +84,45 @@ def extract_profile_fields(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     # Get headline
     headline = profile_data.get("headline")
     
-    # Get company from first position or companyName field
-    company = profile_data.get("companyName")
-    if not company:
-        positions = profile_data.get("positions", [])
-        if positions and len(positions) > 0:
-            company_obj = positions[0].get("company", {})
+    # Get positions for extracting company and job title
+    positions = profile_data.get("positions", [])
+    
+    # Get current job title from first current position (endDate is null)
+    current_job_title = None
+    current_company = None
+    for pos in positions:
+        time_period = pos.get("timePeriod", {}) or {}
+        if time_period.get("endDate") is None:  # Current position
+            current_job_title = pos.get("title")
+            company_obj = pos.get("company", {})
             if isinstance(company_obj, dict):
-                company = company_obj.get("name")
+                current_company = company_obj.get("name")
             elif isinstance(company_obj, str):
-                company = company_obj
+                current_company = company_obj
+            break  # Take first current position
+    
+    # Fallback to companyName field or first position if no current found
+    company = current_company or profile_data.get("companyName")
+    if not company and positions:
+        company_obj = positions[0].get("company", {})
+        if isinstance(company_obj, dict):
+            company = company_obj.get("name")
+        elif isinstance(company_obj, str):
+            company = company_obj
+    
+    # Fallback job title to first position if no current found
+    if not current_job_title and positions:
+        current_job_title = positions[0].get("title")
     
     # Get location
     location = profile_data.get("geoLocationName") or profile_data.get("locationName")
-    
-    # Get follower count
-    follower_count = profile_data.get("followerCount")
     
     return {
         "name": name,
         "headline": headline,
         "company": company,
         "location": location,
-        "follower_count": follower_count
+        "current_job_title": current_job_title
     }
 
 
@@ -156,7 +172,7 @@ async def enrich_lead(lead: Dict[str, Any]) -> Dict[str, Any]:
             "headline": fields.get("headline"),
             "company": fields.get("company"),
             "location": fields.get("location"),
-            "follower_count": fields.get("follower_count"),
+            "current_job_title": fields.get("current_job_title"),
             "scraped_at": datetime.utcnow().isoformat(),
             "error_message": None
         }
@@ -245,7 +261,7 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
             profile_data = result.get("profile_data", {})
             fields = extract_profile_fields(profile_data)
             
-            # Build lead data for embedding
+            # Build lead data for embedding and classification
             lead_for_embedding = {
                 **lead,
                 "profile_data": profile_data,
@@ -253,6 +269,7 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
                 "headline": fields.get("headline"),
                 "company": fields.get("company"),
                 "location": fields.get("location"),
+                "current_job_title": fields.get("current_job_title"),
             }
             
             # Generate embedding
@@ -268,7 +285,7 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
                 "headline": fields.get("headline"),
                 "company": fields.get("company"),
                 "location": fields.get("location"),
-                "follower_count": fields.get("follower_count"),
+                "current_job_title": fields.get("current_job_title"),
                 "scraped_at": datetime.utcnow().isoformat(),
                 "error_message": None
             }

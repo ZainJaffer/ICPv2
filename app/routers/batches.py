@@ -265,7 +265,7 @@ async def export_batch(batch_id: str, min_score: int = 0):
             "Headline",
             "Company",
             "Location",
-            "Followers",
+            "Job Title",
             "ICP Score",
             "Match Reasoning"
         ])
@@ -278,7 +278,7 @@ async def export_batch(batch_id: str, min_score: int = 0):
                 lead.get("headline", ""),
                 lead.get("company", ""),
                 lead.get("location", ""),
-                lead.get("follower_count", ""),
+                lead.get("current_job_title", ""),
                 lead.get("icp_score", ""),
                 lead.get("match_reasoning", "")
             ])

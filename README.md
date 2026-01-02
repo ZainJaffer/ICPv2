@@ -93,16 +93,15 @@ ICPv2/
 │       ├── db/
 │       │   └── supabase_client.py    # Database client
 │       ├── scraping/
-│       │   ├── apify_scraper.py      # LinkedIn scraping (profiles, posts)
+│       │   ├── apify_scraper.py      # LinkedIn scraping (20×5 concurrency)
 │       │   ├── html_parser.py        # Extract URLs from HTML
 │       │   └── profile_id_utils.py   # LinkedIn ID utilities
 │       ├── matching/
-│       │   ├── icp_matcher.py        # Current: simple LLM scoring
-│       │   ├── embeddings.py         # TODO: Generate embeddings
-│       │   ├── classifier.py         # TODO: LLM industry classifier
-│       │   ├── query_parser.py       # TODO: ICP → SQL + semantic
-│       │   └── reranker.py           # TODO: Jina reranker
-│       └── enrichment.py             # Orchestrator for scraping + classification
+│       │   ├── embeddings.py         # ✅ Profile & ICP embeddings
+│       │   ├── classifier.py         # ✅ LLM industry/company classifier
+│       │   ├── reranker.py           # ✅ Jina reranker (modular design)
+│       │   └── icp_matcher.py        # 🔄 Qualification logic (updating)
+│       └── enrichment.py             # Orchestrates scraping + embedding + classification
 ├── inputs/                     # HTML files to process (gitignored)
 ├── outputs/                    # Generated CSVs
 ├── scripts/
@@ -126,11 +125,25 @@ Client (e.g., "Carl Seidman")
 └── Batches (HTML uploads of this client's LinkedIn followers)
     └── Leads (individual profiles)
         ├── status: discovered → enriched → qualified → exported
-        ├── profile_data: {...}           # Raw scraped data
-        ├── embedding: [0.023, ...]       # Profile embedding
+        │
+        ├── # Extracted fields (from Apify scrape)
+        ├── name: "John Smith"
+        ├── headline: "CFO | Finance Leader | Board Member"
+        ├── company: "TechStartup Inc"
+        ├── location: "San Francisco, CA"
+        ├── current_job_title: "Chief Financial Officer"  # From positions[0]
+        │
+        ├── # Raw data
+        ├── profile_data: {...}           # Full Apify response (positions, skills, etc.)
+        │
+        ├── # Generated at enrichment time
+        ├── embedding: [0.023, ...]       # Profile embedding (see below)
         ├── industry: "SaaS"              # LLM classified
         ├── company_type: "startup"       # LLM classified
         ├── industry_reasoning: "..."     # LLM explanation
+        ├── company_reasoning: "..."      # LLM explanation
+        │
+        └── # Added at qualification time
         ├── icp_score: 0-100              # Final score
         └── match_reasoning: "CFO at SaaS startup, matches target"
 ```
@@ -168,11 +181,41 @@ discovered → enriched → qualified → exported
 | `profile_cache` | Shared cache of scraped profiles (30-day TTL) |
 | `fathom_calls` | Tracks processed Fathom calls (Phase 6) |
 
-**New columns for Phase 4:**
-- `leads.embedding` - vector(1536) for semantic search
-- `leads.industry`, `leads.company_type` - LLM classification
-- `leads.industry_reasoning`, `leads.company_reasoning` - LLM explanations
-- `client_icps.embedding` - vector(1536) for ICP representation
+### Leads Table Schema
+
+```sql
+-- Core fields
+id                  uuid PRIMARY KEY
+client_id           uuid REFERENCES clients(id)
+batch_id            uuid REFERENCES batches(id)
+linkedin_url        text UNIQUE
+public_identifier   text
+status              text  -- discovered, enriched, qualified, exported, failed
+
+-- Extracted from Apify scrape
+name                text
+headline            text
+company             text
+location            text
+current_job_title   text  -- From positions[0].title (critical for ICP matching)
+profile_data        jsonb -- Full Apify response
+
+-- Generated at enrichment time
+embedding           vector(1536)  -- Profile embedding for semantic search
+industry            text          -- LLM classified
+company_type        text          -- LLM classified
+industry_reasoning  text          -- LLM explanation
+company_reasoning   text          -- LLM explanation
+
+-- Added at qualification time
+icp_score           integer       -- 0-100
+match_reasoning     text          -- Why this profile matches/doesn't match
+
+-- Metadata
+scraped_at          timestamp
+error_message       text
+retry_count         integer DEFAULT 0
+```
 
 ---
 
@@ -216,6 +259,10 @@ discovered → enriched → qualified → exported
 - [x] Add `embedding` column to leads table
 - [x] Create embeddings.py service
 - [x] Generate embeddings at enrichment time
+- [x] Extract `current_job_title` from first current position
+- [x] Include ALL current positions in embedding (endDate is null)
+- [x] Include position descriptions (full text, no truncation)
+- [x] Include 1-2 past positions for career context
 
 ### Phase 4c: LLM Classifier ✅
 - [x] Add classification columns to leads table
@@ -282,6 +329,97 @@ The qualification pipeline uses embeddings + reranker for semantic matching:
 - Reranker provides highest accuracy for final ranking
 - Classification (industry/company_type) stored for display, not filtering
 - LangSmith traces every step for debugging and evals
+
+---
+
+## How Profile Embeddings Work
+
+Embeddings are vector representations that capture the semantic meaning of a profile. Two similar profiles (e.g., "CFO at fintech startup" and "VP Finance at SaaS company") will have similar embeddings, even though the words are different.
+
+### What Gets Embedded
+
+When a lead is enriched, we construct a text representation from their LinkedIn data:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PROFILE TEXT (fed to OpenAI text-embedding-3-small)            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. NAME          "John Smith"                                  │
+│                                                                 │
+│  2. HEADLINE      "CFO | Finance Leader | Board Member"         │
+│                                                                 │
+│  3. COMPANY       "Works at TechStartup Inc"                    │
+│                                                                 │
+│  4. LOCATION      "Located in San Francisco, CA"                │
+│                                                                 │
+│  5. SUMMARY       "About: 20+ years scaling finance..."         │
+│     (full text, no truncation)                                  │
+│                                                                 │
+│  6. CURRENT ROLES (all positions where endDate is null)         │
+│     "Current roles: Chief Financial Officer at TechStartup.     │
+│      Responsible for Series B fundraise... |                    │
+│      Board Member at Industry Association. Advising on..."      │
+│                                                                 │
+│  7. PAST ROLES    (1-2 for career context)                      │
+│     "Previous: VP Finance at OldCo. Built finance team... |     │
+│      Director at BigCorp"                                       │
+│                                                                 │
+│  8. SKILLS        "Skills: Financial Modeling, Fundraising..."  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+                    OpenAI Embedding API
+                              ↓
+                    [0.012, -0.034, 0.056, ...]
+                    (1536-dimensional vector)
+```
+
+### Why Current Positions Matter Most
+
+LinkedIn profiles often have multiple positions listed. We prioritize **current positions** (where `endDate` is null) because:
+
+1. **ICP matching is about NOW** - "Find me CFOs" means current CFOs, not former
+2. **Multiple current roles are common** - Someone might be:
+   - CFO at TechStartup (primary)
+   - Board Member at OtherCo
+   - Advisor at VCFirm
+   
+   All of these should be captured because any could match the ICP.
+
+3. **Position descriptions are valuable** - They contain context like:
+   - "Led $50M Series B fundraise"
+   - "Scaling team from 5 to 50"
+   - "Building B2B SaaS platform for finance teams"
+
+### Field Extraction Summary
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `name` | firstName + lastName | Display |
+| `headline` | profile.headline | Embedding + display |
+| `company` | First current position's company | Display |
+| `current_job_title` | First current position's title | **Key for ICP matching** |
+| `location` | geoLocationName | Embedding |
+| `profile_data` | Full Apify response | Embedding (positions, skills, summary) |
+
+### How ICP Embeddings Work
+
+ICP criteria is also embedded for semantic comparison:
+
+```
+ICP: {
+  target_titles: ["CFO", "VP Finance"],
+  target_industries: ["SaaS", "Fintech"],
+  company_sizes: ["startup", "mid-market"]
+}
+        ↓
+"Looking for: CFO, VP Finance | Industries: SaaS, Fintech | Company sizes: startup, mid-market"
+        ↓
+OpenAI Embedding → [0.034, -0.012, ...]
+```
+
+The magic: "CFO" and "Chief Financial Officer" have similar embeddings because they mean the same thing. This enables semantic matching without exact keyword matching
 
 ---
 

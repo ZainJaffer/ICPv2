@@ -40,7 +40,7 @@ Name: {name}
 Headline: {headline}
 Company: {company}
 Location: {location}
-Followers: {followers}
+Current Job Title: {current_job_title}
 
 Full Profile Data:
 {profile_summary}
@@ -60,7 +60,6 @@ IMPORTANT:
 - If the person's title is in the EXCLUDE list, score should be 0-10
 - If no ICP criteria are provided, score based on general relevance
 - Consider the person's seniority and decision-making authority
-- Company size inference from follower count: <1000 = startup, 1000-10000 = mid-market, >10000 = enterprise
 
 ## RESPONSE FORMAT
 
@@ -136,7 +135,7 @@ async def score_profile(
             headline=lead.get("headline", "Not available"),
             company=lead.get("company", "Not available"),
             location=lead.get("location", "Not available"),
-            followers=lead.get("follower_count", "Unknown"),
+            current_job_title=lead.get("current_job_title", "Not available"),
             profile_summary=create_profile_summary(profile_data)
         )
         

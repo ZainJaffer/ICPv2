@@ -24,7 +24,7 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     Create a text representation of a profile for embedding.
     
     Combines key fields into a single string that captures
-    the person's professional identity.
+    the person's professional identity. Prioritizes current roles.
     """
     parts = []
     
@@ -44,20 +44,43 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     # Profile data (if available)
     profile_data = lead.get("profile_data", {}) or {}
     
+    # Summary - full text, no truncation
     if profile_data.get("summary"):
-        # Truncate long summaries
-        summary = profile_data["summary"][:500]
-        parts.append(f"About: {summary}")
+        parts.append(f"About: {profile_data['summary']}")
     
-    # Current positions
+    # ALL current positions (endDate is null = currently working)
     positions = profile_data.get("positions", [])
     if positions:
-        for pos in positions[:2]:  # Top 2 positions
+        current_positions = []
+        past_positions = []
+        
+        for pos in positions:
+            # Check if position is current (endDate is null or missing)
+            time_period = pos.get("timePeriod", {}) or {}
+            end_date = time_period.get("endDate")
+            
             title = pos.get("title", "")
             company = pos.get("company", {})
             company_name = company.get("name") if isinstance(company, dict) else company
-            if title and company_name:
-                parts.append(f"{title} at {company_name}")
+            description = pos.get("description", "")
+            
+            if title:
+                position_text = f"{title} at {company_name}" if company_name else title
+                if description:
+                    position_text += f". {description}"
+                
+                if end_date is None:
+                    current_positions.append(position_text)
+                else:
+                    past_positions.append(position_text)
+        
+        # Add all current positions
+        if current_positions:
+            parts.append("Current roles: " + " | ".join(current_positions))
+        
+        # Add 1-2 past positions for career context
+        if past_positions:
+            parts.append("Previous: " + " | ".join(past_positions[:2]))
     
     # Skills
     skills = profile_data.get("skills", [])
