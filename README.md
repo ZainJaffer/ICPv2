@@ -42,11 +42,11 @@ uvicorn app.main:app --reload --port 8001
 | 2 | HTML Ingestion | ✅ Complete & Tested |
 | 3 | Enrichment (Apify scraping) | ✅ Complete & Tested (20×5 concurrency) |
 | 4a | LangSmith Setup | ✅ Complete (EU endpoint) |
-| 4b | pgvector + Embeddings | ✅ Complete |
-| 4c | LLM Classifier | ✅ Complete |
-| 4d | ICP Matching + Reranker | 🔄 In Progress |
-| 4e | Evals Framework | ❌ Not started |
-| 5 | CSV Export | 📝 Code written, not tested |
+| 4b | pgvector + Embeddings | ✅ Complete & Tested |
+| 4c | LLM Classifier | ✅ Complete & Tested |
+| 4d | ICP Matching + Reranker | ✅ Complete & Tested (5 + 50 leads) |
+| 4e | Evals Framework | ⏸️ Deferred to later sprint |
+| 5 | CSV Export | ✅ Complete & Tested |
 | 6 | Fathom ICP Sync | ❌ Not started |
 
 ---
@@ -282,7 +282,9 @@ retry_count         integer DEFAULT 0
 **Note:** SQL filtering skipped - batch sizes (10-1000) are small enough for embeddings-only approach.
 Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testing via LangSmith.
 
-**Testing Results (5 leads):**
+**Testing Results:**
+
+**Small batch (5 leads - Ben Turtel, tech founders ICP):**
 | Lead | Score | Why |
 |------|-------|-----|
 | Kelly Peng (Founder/CEO, AI) | 69 | Perfect match: CEO+Founder+CTO + AI industry |
@@ -291,15 +293,23 @@ Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testin
 | Chris (Director, Consulting) | 15 | Title matches, wrong industry |
 | Mateusz (CEO, HRTech) | 9 | Title matches, wrong industry |
 
-### Phase 4e: Evals Framework ❌
+**Large batch (50 leads - Allison Gates, marketing ICP):**
+- ✅ All 50 leads enriched via concurrent scraping (20 actors × 5 URLs)
+- ✅ All 50 leads qualified with scores 25-85
+- ✅ Top match: Gregory Fuentes (85) - GTM/Revenue Intelligence at SaaS
+- ✅ CMO matches scoring 60-72 (e.g., Melissa Waters)
+- ✅ CSV export working: `allison_gates_qualified.csv`
+
+### Phase 4e: Evals Framework ⏸️
+- [ ] **DEFERRED** - Move to later sprint
 - [ ] Create test dataset (20-50 known profile matches)
 - [ ] Build eval runner in LangSmith
 - [ ] Measure: embedding recall, reranker precision, end-to-end accuracy
 
-### Phase 5: Export Service 📝
+### Phase 5: Export Service ✅
 - [x] CSV generation
 - [x] Download endpoint: `GET /batches/{id}/export`
-- [ ] **Testing pending**
+- [x] **Tested** - Exported 50 qualified leads successfully
 
 ### Phase 6: Fathom ICP Sync ❌
 - [ ] Fathom API client
