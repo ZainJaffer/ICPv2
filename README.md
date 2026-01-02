@@ -224,16 +224,17 @@ discovered → enriched → qualified → exported
 - [x] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
 
 ### Phase 4d: ICP Matching + Reranker 🔄
-- [ ] Port query parser (natural language → SQL + semantic query)
-- [ ] Implement hybrid search (SQL filter + vector similarity)
+- [ ] Expand ICP criteria via LLM for richer embeddings
+- [ ] Vector similarity search (pgvector)
 - [ ] Add Jina reranker integration
-- [ ] Endpoint: `POST /batches/{id}/qualify`
+- [ ] Update `POST /batches/{id}/qualify` endpoint
+
+**Note:** SQL filtering skipped - batch sizes (10-1000) are small enough for embeddings-only approach.
 
 ### Phase 4e: Evals Framework ❌
 - [ ] Create test dataset (20-50 known profile matches)
 - [ ] Build eval runner in LangSmith
-- [ ] Measure: SQL filter accuracy, embedding recall, reranker precision
-- [ ] Compare embeddings-only vs with-reranker
+- [ ] Measure: embedding recall, reranker precision, end-to-end accuracy
 
 ### Phase 5: Export Service 📝
 - [x] CSV generation
@@ -250,37 +251,34 @@ discovered → enriched → qualified → exported
 
 ## ICP Matching Architecture
 
-The qualification pipeline uses a hybrid approach for accuracy:
+The qualification pipeline uses embeddings + reranker for semantic matching:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. QUERY PARSER (LLM)                                          │
-│     "CFO at SaaS startups" → SQL filters + semantic query       │
+│  1. EXPAND ICP (LLM)                                            │
+│     "CFO at SaaS startups"                                      │
+│     → "CFO, Chief Financial Officer, VP Finance, finance        │
+│        executive at SaaS, Software, B2B technology startups"    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  2. SQL FILTER                                                  │
-│     WHERE industry = 'SaaS' AND company_type = 'startup'        │
-│     → Reduces 1000 leads to ~200                                │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  3. VECTOR SEARCH (pgvector)                                    │
+│  2. VECTOR SEARCH (pgvector)                                    │
+│     Generate ICP embedding, find top 50 similar leads           │
 │     cosine_similarity(lead.embedding, icp.embedding)            │
-│     → Ranks by semantic similarity, returns top 50              │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  4. RERANKER (Jina)                                             │
-│     Cross-encoder rescores top 50 with full context             │
+│  3. RERANKER (Jina)                                             │
+│     Cross-encoder rescores top 50 with full profile context     │
 │     → Returns final ranked list with scores                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Why this approach:**
-- SQL filter is fast and deterministic (structured criteria)
-- Embeddings capture semantic similarity (CFO ≈ Chief Financial Officer)
+- Batch sizes (10-1000) are small enough for embeddings-only
+- LLM expands ICP for richer semantic matching (CFO ≈ VP Finance)
 - Reranker provides highest accuracy for final ranking
+- Classification (industry/company_type) stored for display, not filtering
 - LangSmith traces every step for debugging and evals
 
 ---
