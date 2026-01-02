@@ -122,7 +122,7 @@ class JinaReranker(BaseReranker):
             # Sort by score descending (should already be sorted, but ensure)
             results.sort(key=lambda x: x.score, reverse=True)
             
-            print(f"[Jina Reranker] Reranked {len(documents)} docs → top {len(results)}")
+            print(f"[Jina Reranker] Reranked {len(documents)} docs -> {len(results)} results")
             
             return results
             

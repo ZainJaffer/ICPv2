@@ -270,15 +270,26 @@ retry_count         integer DEFAULT 0
 - [x] Integrate classification into enrichment
 - [x] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
 
-### Phase 4d: ICP Matching + Reranker 🔄
+### Phase 4d: ICP Matching + Reranker ✅
 - [x] Jina reranker integration (`reranker.py` with modular design)
-- [ ] Expand ICP criteria via LLM for richer embeddings (optional)
-- [ ] Vector similarity search function (pgvector)
-- [ ] Update `icp_matcher.py` to use embeddings + reranker
-- [ ] Update `POST /batches/{id}/qualify` endpoint
+- [x] Expand ICP criteria via LLM for richer semantic matching
+- [x] Vector similarity search function (pgvector)
+- [x] Update `icp_matcher.py` to use embeddings + reranker
+- [x] Update `POST /batches/{id}/qualify` endpoint
+- [x] Job titles placed first in profile text for better matching
+- [x] Concise ICP expansion (reranker works better with shorter queries)
 
 **Note:** SQL filtering skipped - batch sizes (10-1000) are small enough for embeddings-only approach.
 Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testing via LangSmith.
+
+**Testing Results (5 leads):**
+| Lead | Score | Why |
+|------|-------|-----|
+| Kelly Peng (Founder/CEO, AI) | 69 | Perfect match: CEO+Founder+CTO + AI industry |
+| Monica (CEO, Healthcare) | 16 | Title matches, wrong industry |
+| John (Global Head, Consulting) | 16 | Title not exact match |
+| Chris (Director, Consulting) | 15 | Title matches, wrong industry |
+| Mateusz (CEO, HRTech) | 9 | Title matches, wrong industry |
 
 ### Phase 4e: Evals Framework ❌
 - [ ] Create test dataset (20-50 known profile matches)

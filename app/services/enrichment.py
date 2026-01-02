@@ -115,6 +115,36 @@ def extract_profile_fields(profile_data: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(company_obj, str):
             company = company_obj
     
+    # Filter out invalid company names (durations like "8 yrs 1 mo")
+    def is_duration(text):
+        if not text:
+            return False
+        text_lower = text.lower()
+        return ("yrs" in text_lower or "mos" in text_lower or " mo" in text_lower or 
+                text_lower.endswith(" yr") or text_lower.endswith(" mo"))
+    
+    if is_duration(company):
+        # This looks like a duration, not a company name
+        # Apify sometimes swaps title and company - check if any title looks like a company
+        company = None
+        for pos in positions:
+            time_period = pos.get("timePeriod", {}) or {}
+            if time_period.get("endDate") is None:  # Current position
+                title = pos.get("title", "")
+                company_obj = pos.get("company", {})
+                company_name = company_obj.get("name") if isinstance(company_obj, dict) else company_obj
+                
+                # If company is a duration but title looks like a company name, swap them
+                if is_duration(company_name) and title and not is_duration(title):
+                    company = title  # Use title as company (it's probably reversed)
+                    break
+        
+        # Still no company? Try profile-level companyName
+        if not company:
+            company = profile_data.get("companyName")
+            if is_duration(company):
+                company = None
+    
     # Fallback job titles to first position if no current found
     if not current_job_titles and positions:
         first_title = positions[0].get("title")

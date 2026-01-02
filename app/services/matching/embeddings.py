@@ -23,39 +23,41 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     """
     Create a text representation of a profile for embedding.
     
-    Combines key fields into a single string that captures
-    the person's professional identity. Prioritizes current roles.
+    Order is critical for ICP matching - job titles FIRST since that's
+    the primary matching criterion, followed by industry/company.
     """
     parts = []
+    profile_data = lead.get("profile_data", {}) or {}
     
-    # Basic info
+    # 1. CURRENT JOB TITLES FIRST (most important for ICP matching)
+    current_job_titles = lead.get("current_job_titles") or []
+    if current_job_titles:
+        parts.append(f"Job titles: {', '.join(current_job_titles)}")
+    
+    # 2. Name and headline
     if lead.get("name"):
         parts.append(lead["name"])
     
     if lead.get("headline"):
         parts.append(lead["headline"])
     
+    # 3. Company and industry (important for ICP matching)
     if lead.get("company"):
-        parts.append(f"Works at {lead['company']}")
+        parts.append(f"Company: {lead['company']}")
+    
+    if lead.get("industry"):
+        parts.append(f"Industry: {lead['industry']}")
     
     if lead.get("location"):
-        parts.append(f"Located in {lead['location']}")
+        parts.append(f"Location: {lead['location']}")
     
-    # Profile data (if available)
-    profile_data = lead.get("profile_data", {}) or {}
-    
-    # Summary - full text, no truncation
-    if profile_data.get("summary"):
-        parts.append(f"About: {profile_data['summary']}")
-    
-    # ALL current positions (endDate is null = currently working)
+    # 4. Current positions with descriptions
     positions = profile_data.get("positions", [])
     if positions:
         current_positions = []
         past_positions = []
         
         for pos in positions:
-            # Check if position is current (endDate is null or missing)
             time_period = pos.get("timePeriod", {}) or {}
             end_date = time_period.get("endDate")
             
@@ -74,19 +76,21 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
                 else:
                     past_positions.append(position_text)
         
-        # Add all current positions
         if current_positions:
             parts.append("Current roles: " + " | ".join(current_positions))
         
-        # Add 1-2 past positions for career context
         if past_positions:
             parts.append("Previous: " + " | ".join(past_positions[:2]))
     
-    # Skills
+    # 5. Summary
+    if profile_data.get("summary"):
+        parts.append(f"About: {profile_data['summary']}")
+    
+    # 6. Skills
     skills = profile_data.get("skills", [])
     if skills:
         skill_names = [s.get("name") if isinstance(s, dict) else s for s in skills[:10]]
-        skill_names = [s for s in skill_names if s]  # Filter None
+        skill_names = [s for s in skill_names if s]
         if skill_names:
             parts.append(f"Skills: {', '.join(skill_names)}")
     

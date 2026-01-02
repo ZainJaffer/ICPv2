@@ -35,47 +35,32 @@ MODEL = "gpt-4o-mini"
 # ICP Expansion
 # =============================================================================
 
-ICP_EXPANSION_PROMPT = """You are expanding ICP (Ideal Customer Profile) criteria into a rich semantic description.
+ICP_EXPANSION_PROMPT = """Expand these ICP criteria into a CONCISE description (max 100 words) for semantic matching.
 
-## ICP CRITERIA
+ICP:
+- Titles: {target_titles}
+- Industries: {target_industries}  
+- Company sizes: {company_sizes}
+- Keywords: {target_keywords}
 
-Target Titles: {target_titles}
-Target Industries: {target_industries}
-Company Sizes: {company_sizes}
-Target Keywords: {target_keywords}
-Notes: {notes}
+Include related job titles (e.g., CFO = Chief Financial Officer, VP Finance).
+Keep it short and focused on what matters for matching.
 
-## TASK
-
-Expand these criteria into a detailed paragraph that includes:
-1. The exact titles AND related/equivalent titles (e.g., CFO → Chief Financial Officer, VP Finance, Finance Director, Head of Finance)
-2. The industries AND related industries
-3. Company size descriptions
-4. Seniority and decision-making authority indicators
-5. Any keywords or signals that would indicate a good match
-
-Write 2-3 paragraphs that fully describe the ideal person. Be comprehensive.
-This text will be used for semantic embedding matching.
-
-## RESPONSE
-
-Respond with just the expanded description, no JSON or formatting."""
+Respond with just the description, no formatting."""
 
 
 def expand_icp(icp: Dict[str, Any]) -> str:
     """
-    Expand ICP criteria into a rich semantic description using LLM.
+    Expand ICP criteria into a CONCISE description using LLM.
     
-    This creates better embeddings by including synonyms and related terms.
-    E.g., "CFO" expands to "CFO, Chief Financial Officer, VP Finance, Head of Finance..."
+    Keep it short (max 100 words) for better reranker performance.
     """
     try:
         prompt = ICP_EXPANSION_PROMPT.format(
             target_titles=", ".join(icp.get("target_titles") or ["Any title"]),
             target_industries=", ".join(icp.get("target_industries") or ["Any industry"]),
             company_sizes=", ".join(icp.get("company_sizes") or ["Any size"]),
-            target_keywords=", ".join(icp.get("target_keywords") or []),
-            notes=icp.get("notes") or "None"
+            target_keywords=", ".join(icp.get("target_keywords") or ["growth", "leadership"])
         )
         
         response = client.chat.completions.create(
@@ -256,7 +241,7 @@ async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
             if result.lead_id:
                 rerank_scores[result.lead_id] = result.score
         
-        print(f"[ICP Matcher] Reranking complete")
+        print(f"[ICP Matcher] Reranking complete - {len(rerank_scores)} scores")
         
     except Exception as e:
         print(f"[ICP Matcher] Reranking failed: {e}")
