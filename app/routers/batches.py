@@ -15,9 +15,9 @@ from typing import Optional
 import csv
 import io
 
-from ..services.supabase_client import supabase
+from ..services.db.supabase_client import supabase
 from ..services.enrichment import enrich_batch
-from ..services.icp_matcher import qualify_batch
+from ..services.matching.icp_matcher import qualify_batch
 
 router = APIRouter()
 

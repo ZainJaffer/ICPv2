@@ -5,7 +5,8 @@ Headless API for qualifying LinkedIn followers against client-specific ICPs.
 """
 
 from dotenv import load_dotenv
-load_dotenv()  # Load .env before anything else
+load_dotenv(".env.local")  # Load .env.local first
+load_dotenv()  # Fallback to .env
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

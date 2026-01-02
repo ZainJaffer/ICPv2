@@ -15,7 +15,7 @@ from typing import List, Dict, Optional, Any, Set
 from apify_client import ApifyClientAsync
 from dotenv import load_dotenv
 
-from .supabase_client import supabase
+from ..db.supabase_client import supabase
 from .profile_id_utils import get_profile_id_from_post, get_profile_id_from_profile
 
 load_dotenv()

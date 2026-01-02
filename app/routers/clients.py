@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 from uuid import UUID
 
-from ..services.supabase_client import supabase
-from ..services.html_parser import extract_linkedin_urls
+from ..services.db.supabase_client import supabase
+from ..services.scraping.html_parser import extract_linkedin_urls
 from ..services.enrichment import create_leads_from_urls
 
 router = APIRouter()

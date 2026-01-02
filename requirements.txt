@@ -14,6 +14,11 @@ apify-client>=1.6.0
 # OpenAI (GPT-5-mini for ICP matching)
 openai>=1.12.0
 
+# LangChain + LangSmith (observability & evals)
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langsmith>=0.2.0
+
 # Pydantic for data validation
 pydantic>=2.5.0
 

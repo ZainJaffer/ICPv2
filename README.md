@@ -41,7 +41,11 @@ uvicorn app.main:app --reload --port 8001
 | 1 | Database Schema | ✅ Complete |
 | 2 | HTML Ingestion | ✅ Complete & Tested |
 | 3 | Enrichment (Apify scraping) | ✅ Complete & Tested (20×5 concurrency) |
-| 4 | ICP Qualification (LLM scoring) | 📝 Code written, not tested |
+| 4a | LangSmith Setup | ✅ Complete (EU endpoint) |
+| 4b | pgvector + Embeddings | ✅ Complete |
+| 4c | LLM Classifier | 🔄 In Progress |
+| 4d | ICP Matching + Reranker | ❌ Not started |
+| 4e | Evals Framework | ❌ Not started |
 | 5 | CSV Export | 📝 Code written, not tested |
 | 6 | Fathom ICP Sync | ❌ Not started |
 
@@ -67,9 +71,11 @@ uvicorn app.main:app --reload --port 8001
 | Component | Technology |
 |-----------|------------|
 | Backend | FastAPI + Pydantic |
-| Database | Supabase (state machine + profile cache) |
-| AI/LLM | GPT-5-mini with structured JSON outputs |
-| File I/O | HTML file ingestion (local), API upload endpoint |
+| Database | Supabase + pgvector (state machine + embeddings) |
+| AI/LLM | GPT-5-mini (classifier, query parser) |
+| Embeddings | OpenAI text-embedding-3-small |
+| Reranker | Jina Reranker (cross-encoder) |
+| Observability | LangSmith (tracing + evals) |
 | Scraping | Apify LinkedIn Profile Scraper |
 
 ---
@@ -84,12 +90,19 @@ ICPv2/
 │   │   ├── clients.py          # Client & ICP management
 │   │   └── batches.py          # Batch operations (enrich, qualify, export)
 │   └── services/
-│       ├── supabase_client.py  # Database client
-│       ├── html_parser.py      # Extract URLs from HTML
-│       ├── apify_scraper.py    # LinkedIn scraping (profiles, posts, reactions)
-│       ├── enrichment.py       # Batch enrichment logic
-│       ├── icp_matcher.py      # LLM-based ICP scoring
-│       └── profile_id_utils.py # LinkedIn ID utilities
+│       ├── db/
+│       │   └── supabase_client.py    # Database client
+│       ├── scraping/
+│       │   ├── apify_scraper.py      # LinkedIn scraping (profiles, posts)
+│       │   ├── html_parser.py        # Extract URLs from HTML
+│       │   └── profile_id_utils.py   # LinkedIn ID utilities
+│       ├── matching/
+│       │   ├── icp_matcher.py        # Current: simple LLM scoring
+│       │   ├── embeddings.py         # TODO: Generate embeddings
+│       │   ├── classifier.py         # TODO: LLM industry classifier
+│       │   ├── query_parser.py       # TODO: ICP → SQL + semantic
+│       │   └── reranker.py           # TODO: Jina reranker
+│       └── enrichment.py             # Orchestrator for scraping + classification
 ├── inputs/                     # HTML files to process (gitignored)
 ├── outputs/                    # Generated CSVs
 ├── scripts/
@@ -107,13 +120,19 @@ Client (e.g., "Carl Seidman")
 ├── ICP Definition (extracted from Fathom calls)
 │   ├── target_titles: ["CFO", "Finance Director"]
 │   ├── target_industries: ["SaaS", "Fintech"]
-│   └── company_sizes: ["startup", "mid-market"]
+│   ├── company_sizes: ["startup", "mid-market"]
+│   └── embedding: [0.012, -0.034, ...]  # Semantic representation
 │
 └── Batches (HTML uploads of this client's LinkedIn followers)
-    └── Leads (individual profiles, scored against this client's ICP)
+    └── Leads (individual profiles)
         ├── status: discovered → enriched → qualified → exported
-        ├── icp_score: 0-100
-        └── match_reasoning: "CFO at SaaS startup, matches target profile"
+        ├── profile_data: {...}           # Raw scraped data
+        ├── embedding: [0.023, ...]       # Profile embedding
+        ├── industry: "SaaS"              # LLM classified
+        ├── company_type: "startup"       # LLM classified
+        ├── industry_reasoning: "..."     # LLM explanation
+        ├── icp_score: 0-100              # Final score
+        └── match_reasoning: "CFO at SaaS startup, matches target"
 ```
 
 ---
@@ -143,11 +162,17 @@ discovered → enriched → qualified → exported
 | Table | Purpose |
 |-------|---------|
 | `clients` | Client records (name, created_at) |
-| `client_icps` | ICP criteria per client (target_titles, industries, company_sizes) |
+| `client_icps` | ICP criteria per client (target_titles, industries, company_sizes, embedding) |
 | `batches` | HTML upload batches per client |
-| `leads` | Individual profiles to qualify (status, profile_data, icp_score) |
+| `leads` | Individual profiles (status, profile_data, embedding, classification, icp_score) |
 | `profile_cache` | Shared cache of scraped profiles (30-day TTL) |
 | `fathom_calls` | Tracks processed Fathom calls (Phase 6) |
+
+**New columns for Phase 4:**
+- `leads.embedding` - vector(1536) for semantic search
+- `leads.industry`, `leads.company_type` - LLM classification
+- `leads.industry_reasoning`, `leads.company_reasoning` - LLM explanations
+- `client_icps.embedding` - vector(1536) for ICP representation
 
 ---
 
@@ -180,12 +205,35 @@ discovered → enriched → qualified → exported
 - [x] **Tested with 5 profiles**
 - [x] **Concurrent batching (20 actors × 5 URLs) - TESTED ✅**
 
-### Phase 4: Qualification Service 📝
-- [x] ICP matching prompt with GPT-5-mini
-- [x] Score + reasoning generation
-- [x] Status updates
-- [x] Endpoint: `POST /batches/{id}/qualify`
-- [ ] **Testing pending**
+### Phase 4a: LangSmith Setup ✅
+- [x] Add langchain, langchain-openai, langsmith to requirements
+- [x] Configure LANGCHAIN_API_KEY, LANGCHAIN_TRACING_V2
+- [x] Configure EU endpoint (LANGCHAIN_ENDPOINT)
+- [x] Verify traces appear in LangSmith dashboard
+
+### Phase 4b: pgvector + Embeddings ✅
+- [x] Enable pgvector in Supabase
+- [x] Add `embedding` column to leads table
+- [x] Create embeddings.py service
+- [x] Generate embeddings at enrichment time
+
+### Phase 4c: LLM Classifier 🔄
+- [ ] Add classification columns to leads table
+- [ ] Create classifier.py service
+- [ ] Integrate classification into enrichment
+- [ ] Store `industry`, `company_type`, `industry_reasoning`, `company_reasoning`
+
+### Phase 4d: ICP Matching + Reranker ❌
+- [ ] Port query parser (natural language → SQL + semantic query)
+- [ ] Implement hybrid search (SQL filter + vector similarity)
+- [ ] Add Jina reranker integration
+- [ ] Endpoint: `POST /batches/{id}/qualify`
+
+### Phase 4e: Evals Framework ❌
+- [ ] Create test dataset (20-50 known profile matches)
+- [ ] Build eval runner in LangSmith
+- [ ] Measure: SQL filter accuracy, embedding recall, reranker precision
+- [ ] Compare embeddings-only vs with-reranker
 
 ### Phase 5: Export Service 📝
 - [x] CSV generation
@@ -197,6 +245,43 @@ discovered → enriched → qualified → exported
 - [ ] ICP extraction prompt
 - [ ] Accumulation logic (expand, don't replace)
 - [ ] Endpoint: `POST /clients/{id}/sync-icp`
+
+---
+
+## ICP Matching Architecture
+
+The qualification pipeline uses a hybrid approach for accuracy:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. QUERY PARSER (LLM)                                          │
+│     "CFO at SaaS startups" → SQL filters + semantic query       │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  2. SQL FILTER                                                  │
+│     WHERE industry = 'SaaS' AND company_type = 'startup'        │
+│     → Reduces 1000 leads to ~200                                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  3. VECTOR SEARCH (pgvector)                                    │
+│     cosine_similarity(lead.embedding, icp.embedding)            │
+│     → Ranks by semantic similarity, returns top 50              │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  4. RERANKER (Jina)                                             │
+│     Cross-encoder rescores top 50 with full context             │
+│     → Returns final ranked list with scores                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why this approach:**
+- SQL filter is fast and deterministic (structured criteria)
+- Embeddings capture semantic similarity (CFO ≈ Chief Financial Officer)
+- Reranker provides highest accuracy for final ranking
+- LangSmith traces every step for debugging and evals
 
 ---
 
@@ -212,10 +297,22 @@ discovered → enriched → qualified → exported
 ## Environment Variables
 
 ```env
+# Database
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=your_service_role_key
+
+# Scraping
 APIFY_API_TOKEN=your_apify_token
+
+# LLM + Embeddings
 OPENAI_API_KEY=your_openai_key
+
+# Observability
+LANGCHAIN_API_KEY=your_langsmith_api_key
+LANGCHAIN_TRACING_V2=true
+
+# Reranker (Phase 4d)
+JINA_API_KEY=your_jina_api_key
 ```
 
 ---

@@ -10,8 +10,9 @@ Handles:
 from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime
 
-from .supabase_client import supabase
-from .apify_scraper import scraper, normalize_linkedin_url, extract_urn_from_url
+from .db.supabase_client import supabase
+from .scraping.apify_scraper import scraper, normalize_linkedin_url, extract_urn_from_url
+from .matching.embeddings import generate_profile_embedding, format_embedding_for_postgres
 
 
 async def create_leads_from_urls(
@@ -243,6 +244,19 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
             profile_data = result.get("profile_data", {})
             fields = extract_profile_fields(profile_data)
             
+            # Build lead data for embedding
+            lead_for_embedding = {
+                **lead,
+                "profile_data": profile_data,
+                "name": fields.get("name"),
+                "headline": fields.get("headline"),
+                "company": fields.get("company"),
+                "location": fields.get("location"),
+            }
+            
+            # Generate embedding
+            embedding = generate_profile_embedding(lead_for_embedding)
+            
             update_data = {
                 "status": "enriched",
                 "profile_data": profile_data,
@@ -254,6 +268,11 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
                 "scraped_at": datetime.utcnow().isoformat(),
                 "error_message": None
             }
+            
+            # Add embedding if generated successfully
+            if embedding:
+                update_data["embedding"] = format_embedding_for_postgres(embedding)
+            
             supabase.table("leads").update(update_data).eq("id", lead_id).execute()
             
             if result.get("from_cache"):
