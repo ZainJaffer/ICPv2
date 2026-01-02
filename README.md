@@ -40,7 +40,7 @@ uvicorn app.main:app --reload --port 8001
 | 0 | Project Setup | ✅ Complete |
 | 1 | Database Schema | ✅ Complete |
 | 2 | HTML Ingestion | ✅ Complete & Tested |
-| 3 | Enrichment (Apify scraping) | ✅ Tested (5 profiles) |
+| 3 | Enrichment (Apify scraping) | ✅ Complete & Tested (20×5 concurrency) |
 | 4 | ICP Qualification (LLM scoring) | 📝 Code written, not tested |
 | 5 | CSV Export | 📝 Code written, not tested |
 | 6 | Fathom ICP Sync | ❌ Not started |
@@ -86,7 +86,7 @@ ICPv2/
 │   └── services/
 │       ├── supabase_client.py  # Database client
 │       ├── html_parser.py      # Extract URLs from HTML
-│       ├── apify_scraper.py    # LinkedIn profile scraping
+│       ├── apify_scraper.py    # LinkedIn scraping (profiles, posts, reactions)
 │       ├── enrichment.py       # Batch enrichment logic
 │       ├── icp_matcher.py      # LLM-based ICP scoring
 │       └── profile_id_utils.py # LinkedIn ID utilities
@@ -178,7 +178,7 @@ discovered → enriched → qualified → exported
 - [x] Status updates
 - [x] Endpoint: `POST /batches/{id}/enrich?limit=N`
 - [x] **Tested with 5 profiles**
-- [ ] **TODO: Add chunking + concurrency (20 actors × 5 URLs)**
+- [x] **Concurrent batching (20 actors × 5 URLs) - TESTED ✅**
 
 ### Phase 4: Qualification Service 📝
 - [x] ICP matching prompt with GPT-5-mini

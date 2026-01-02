@@ -11,7 +11,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime
 
 from .supabase_client import supabase
-from .apify_scraper import scraper, normalize_linkedin_url, extract_public_identifier
+from .apify_scraper import scraper, normalize_linkedin_url, extract_urn_from_url
 
 
 async def create_leads_from_urls(
@@ -35,7 +35,7 @@ async def create_leads_from_urls(
     
     for url in urls:
         normalized_url = normalize_linkedin_url(url)
-        public_id = extract_public_identifier(url)
+        public_id = extract_urn_from_url(url)
         
         try:
             lead_data = {
@@ -120,12 +120,14 @@ async def enrich_lead(lead: Dict[str, Any]) -> Dict[str, Any]:
     """
     lead_id = lead["id"]
     linkedin_url = lead["linkedin_url"]
+    normalized_url = normalize_linkedin_url(linkedin_url)
     
     try:
-        # Scrape profile (checks cache internally)
-        result = await scraper.scrape_profile(linkedin_url)
+        # Scrape profile using concurrent method (works for single URLs too)
+        scrape_results = await scraper.scrape_profiles_concurrent([normalized_url])
+        result = scrape_results.get(normalized_url, {})
         
-        if not result["success"]:
+        if not result.get("success"):
             # Update lead with error
             supabase.table("leads").update({
                 "status": "failed",
@@ -220,9 +222,9 @@ async def enrich_batch(batch_id: str, limit: Optional[int] = None) -> Dict[str, 
         urls.append(url)
         lead_by_url[url] = lead
     
-    # Batch scrape all URLs in one Apify call
-    print("[Step 2] Scraping profiles via Apify (batch mode)...", flush=True)
-    scrape_results = await scraper.scrape_profiles_batch(urls)
+    # Scrape with concurrent batching (20 actors × 5 URLs)
+    print("[Step 2] Scraping profiles via Apify (concurrent mode)...", flush=True)
+    scrape_results = await scraper.scrape_profiles_concurrent(urls)
     
     # Process results and update leads
     print("\n[Step 3] Updating leads in Supabase...", flush=True)
