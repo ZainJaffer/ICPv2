@@ -2,20 +2,19 @@
 ICP Matcher Service - Score LinkedIn profiles against client ICPs.
 
 Architecture:
-1. Expand ICP criteria via LLM (for richer semantic matching)
+1. Build ICP text from raw criteria (no LLM expansion - preserves client intent)
 2. Generate ICP embedding
 3. Vector search to rank all leads by similarity
-4. Rerank with Jina for final ordering
+4. Rerank with Jina to filter bottom matches
 5. Convert scores and update leads
 
-This is much faster than LLM-per-profile (1 LLM call vs N calls).
+Embeddings naturally handle synonyms (CFO ≈ Chief Financial Officer) so LLM
+expansion is unnecessary and risks adding terms the client didn't ask for.
 """
 
 import os
-import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from openai import OpenAI
 from dotenv import load_dotenv
 
 from ..db.supabase_client import supabase
@@ -25,65 +24,39 @@ from .reranker import get_reranker
 load_dotenv(".env.local")
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-MODEL = "gpt-4o-mini"
-
 
 # =============================================================================
-# ICP Expansion
+# ICP Text Building (No LLM - Direct from criteria)
 # =============================================================================
 
-ICP_EXPANSION_PROMPT = """Expand these ICP criteria into a CONCISE description (max 100 words) for semantic matching.
-
-ICP:
-- Titles: {target_titles}
-- Industries: {target_industries}  
-- Company sizes: {company_sizes}
-- Keywords: {target_keywords}
-
-Include related job titles (e.g., CFO = Chief Financial Officer, VP Finance).
-Keep it short and focused on what matters for matching.
-
-Respond with just the description, no formatting."""
-
-
-def expand_icp(icp: Dict[str, Any]) -> str:
+def build_icp_text(icp: Dict[str, Any]) -> str:
     """
-    Expand ICP criteria into a CONCISE description using LLM.
-    
-    Keep it short (max 100 words) for better reranker performance.
+    Build ICP text directly from criteria without LLM expansion.
+
+    Embeddings naturally understand that CFO ≈ Chief Financial Officer,
+    so we don't need to expand terms. This preserves client intent and
+    avoids adding terms they didn't ask for (e.g., expanding CFO to VP Finance).
     """
-    try:
-        prompt = ICP_EXPANSION_PROMPT.format(
-            target_titles=", ".join(icp.get("target_titles") or ["Any title"]),
-            target_industries=", ".join(icp.get("target_industries") or ["Any industry"]),
-            company_sizes=", ".join(icp.get("company_sizes") or ["Any size"]),
-            target_keywords=", ".join(icp.get("target_keywords") or ["growth", "leadership"])
-        )
-        
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        
-        expanded = response.choices[0].message.content.strip()
-        print(f"[ICP Matcher] Expanded ICP: {expanded[:200]}...")
-        return expanded
-        
-    except Exception as e:
-        print(f"[ICP Matcher] Error expanding ICP: {e}")
-        # Fallback: just concatenate the criteria
-        parts = []
-        if icp.get("target_titles"):
-            parts.append(f"Looking for: {', '.join(icp['target_titles'])}")
-        if icp.get("target_industries"):
-            parts.append(f"Industries: {', '.join(icp['target_industries'])}")
-        if icp.get("company_sizes"):
-            parts.append(f"Company sizes: {', '.join(icp['company_sizes'])}")
-        return " | ".join(parts) or "General professional profile"
+    parts = []
+
+    if icp.get("target_titles"):
+        parts.append(f"Target titles: {', '.join(icp['target_titles'])}")
+
+    if icp.get("target_industries"):
+        parts.append(f"Industries: {', '.join(icp['target_industries'])}")
+
+    if icp.get("company_sizes"):
+        parts.append(f"Company sizes: {', '.join(icp['company_sizes'])}")
+
+    if icp.get("target_keywords"):
+        parts.append(f"Keywords: {', '.join(icp['target_keywords'])}")
+
+    if icp.get("notes"):
+        parts.append(f"Notes: {icp['notes']}")
+
+    icp_text = " | ".join(parts) if parts else "General professional profile"
+    print(f"[ICP Matcher] ICP text: {icp_text}")
+    return icp_text
 
 
 # =============================================================================
@@ -174,32 +147,32 @@ def generate_match_reasoning(lead: Dict[str, Any], score: int, icp: Dict[str, An
 async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
     """
     Qualify all enriched leads in a batch using embeddings + reranker.
-    
+
     Flow:
-    1. Expand ICP criteria (LLM)
+    1. Build ICP text from raw criteria (no LLM expansion)
     2. Generate ICP embedding
     3. Vector search to get all leads ranked by similarity
-    4. Rerank with Jina for final ordering
+    4. Rerank with Jina to filter bottom matches
     5. Update all leads with scores
-    
+
     Args:
         batch_id: The batch ID to process
         icp: ICP criteria from client_icps table
-    
+
     Returns:
         Dict with counts: qualified, failed
     """
     print(f"\n{'='*60}")
     print(f"[ICP Matcher] Starting qualification for batch: {batch_id}")
     print(f"{'='*60}\n")
-    
-    # Step 1: Expand ICP
-    print("[Step 1] Expanding ICP criteria...")
-    expanded_icp = expand_icp(icp)
-    
+
+    # Step 1: Build ICP text (no LLM expansion - preserves client intent)
+    print("[Step 1] Building ICP text from criteria...")
+    icp_text = build_icp_text(icp)
+
     # Step 2: Generate ICP embedding
     print("[Step 2] Generating ICP embedding...")
-    icp_embedding = generate_embedding(expanded_icp)
+    icp_embedding = generate_embedding(icp_text)
     
     if not icp_embedding:
         print("[ICP Matcher] Failed to generate ICP embedding")
@@ -230,7 +203,7 @@ async def qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]:
         
         # Rerank (returns ALL leads, no limit)
         reranked = reranker.rerank(
-            query=expanded_icp,
+            query=icp_text,
             documents=documents,
             lead_ids=lead_ids
         )
@@ -342,13 +315,13 @@ async def re_qualify_batch(batch_id: str, icp: Dict[str, Any]) -> Dict[str, int]
 async def score_profile(lead: Dict[str, Any], icp: Dict[str, Any]) -> Dict[str, Any]:
     """
     Score a single profile against the ICP.
-    
+
     Uses embedding similarity. For debugging/testing only.
     """
     try:
-        # Expand ICP and generate embedding
-        expanded_icp = expand_icp(icp)
-        icp_embedding = generate_embedding(expanded_icp)
+        # Build ICP text and generate embedding
+        icp_text = build_icp_text(icp)
+        icp_embedding = generate_embedding(icp_text)
         
         if not icp_embedding:
             return {"success": False, "score": 0, "reasoning": "Failed to generate ICP embedding"}

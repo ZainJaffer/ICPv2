@@ -16,7 +16,7 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-5-mini"
 
 # Industry categories (expandable)
 INDUSTRIES = [
@@ -97,12 +97,10 @@ def build_profile_context(lead: Dict[str, Any]) -> Dict[str, str]:
     """Extract relevant context from lead for classification."""
     profile_data = lead.get("profile_data", {}) or {}
     
-    # Get summary
+    # Get summary (no truncation - GPT-5-mini can handle full summaries)
     summary = profile_data.get("summary", "Not available")
-    if summary and len(summary) > 500:
-        summary = summary[:500] + "..."
     
-    # Get current position details
+    # Get current position details (no truncation - include full descriptions)
     positions = profile_data.get("positions", [])
     position_details = "Not available"
     if positions:
@@ -111,8 +109,6 @@ def build_profile_context(lead: Dict[str, Any]) -> Dict[str, str]:
         company = pos.get("company", {})
         company_name = company.get("name") if isinstance(company, dict) else company
         description = pos.get("description", "")
-        if description and len(description) > 300:
-            description = description[:300] + "..."
         position_details = f"{title} at {company_name}"
         if description:
             position_details += f"\n{description}"

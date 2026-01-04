@@ -45,9 +45,11 @@ uvicorn app.main:app --reload --port 8001
 | 4b | pgvector + Embeddings | ✅ Complete & Tested |
 | 4c | LLM Classifier | ✅ Complete & Tested |
 | 4d | ICP Matching + Reranker | ✅ Complete & Tested (5 + 50 leads) |
-| 4e | Evals Framework | ⏸️ Deferred to later sprint |
 | 5 | CSV Export | ✅ Complete & Tested |
+| 5a | API Usability (ICP upsert + background + run) | ✅ Implemented |
+| 4e | Evals Framework | 📅 Future sprint |
 | 6 | Fathom ICP Sync | ❌ Not started |
+| 7 | KTO Fine-tuning | 📊 Conditional - awaiting feedback data |
 
 ---
 
@@ -300,16 +302,22 @@ Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testin
 - ✅ CMO matches scoring 60-72 (e.g., Melissa Waters)
 - ✅ CSV export working: `allison_gates_qualified.csv`
 
-### Phase 4e: Evals Framework ⏸️
-- [ ] **DEFERRED** - Move to later sprint
-- [ ] Create test dataset (20-50 known profile matches)
-- [ ] Build eval runner in LangSmith
-- [ ] Measure: embedding recall, reranker precision, end-to-end accuracy
-
 ### Phase 5: Export Service ✅
 - [x] CSV generation
 - [x] Download endpoint: `GET /batches/{id}/export`
 - [x] **Tested** - Exported 50 qualified leads successfully
+
+### Phase 5a: API Usability ✅
+Goal: make v1 fully operable via API (no scripts/DB edits) and avoid “PowerShell hangs” on long requests.
+
+- [x] **Upsert ICP via API**:
+  - `POST /clients/{id}/icp` (preferred)
+  - `PUT /clients/{id}/icp` (alias)
+- [x] **Background mode** for long-running operations (returns immediately; poll `GET /batches/{id}`):
+  - `POST /batches/{id}/enrich?background=true`
+  - `POST /batches/{id}/qualify?background=true`
+- [x] **One-shot batch run** (enrich → qualify):
+  - `POST /batches/{id}/run?background=true`
 
 ### Phase 6: Fathom ICP Sync ❌
 - [ ] Fathom API client
@@ -319,16 +327,55 @@ Reranker is modular - can swap Jina for Cohere, ZeroEntropy, etc. for A/B testin
 
 ---
 
+## Future Phases / Later Sprints
+
+### Phase 4e: Evals Framework
+- [ ] Create test dataset (20-50 known profile matches)
+- [ ] Build eval runner in LangSmith
+- [ ] Measure: embedding recall, reranker precision, end-to-end accuracy
+- [ ] Consistency checks (score variance across runs)
+- [ ] Ranking quality analysis (top vs bottom differences)
+- [ ] Component comparison (embeddings vs reranker)
+
+### Phase 7: KTO Fine-tuning (Conditional)
+
+**Goal:** Fine-tune the Jina reranker using human feedback to improve ICP matching accuracy.
+
+**Approach:** KTO (Kahneman-Tversky Optimization) uses binary feedback (good/bad) to train preference models. The mock_ui's trash icon (🗑) provides explicit negative signal when reviewers reject profiles.
+
+**Data Collection:**
+- **Explicit positives:** Leads exported to CSV (strongest signal)
+- **Explicit negatives:** Leads marked with trash icon (rare but valuable - these are model mistakes)
+
+**Key Design Decision:** ICP-conditioned training
+- Include ICP criteria as context in training queries
+- Allows cross-client learning without contradictory signals
+- Model learns "what's good for THIS type of ICP" not "what's good globally"
+
+**Prerequisites:**
+- [ ] Add `lead_feedback` table to store trash icon clicks
+- [ ] Update mock_ui to persist feedback to backend (`POST /feedback`)
+- [ ] Track exported leads as implicit positives
+- [ ] Accumulate sufficient feedback (~100 positives, ~20+ negatives)
+
+**Implementation (when ready):**
+- [ ] Export training data in Jina-compatible format
+- [ ] Integrate Jina fine-tuning API
+- [ ] A/B test fine-tuned vs base model via LangSmith
+
+**Status:** 📊 Waiting for feedback data. Given that profiles reaching the UI have already passed embedding similarity + reranker filtering, we expect few negatives. Will reassess feasibility after observing actual trash icon usage patterns across multiple batches.
+
+---
+
 ## ICP Matching Architecture
 
 The qualification pipeline uses embeddings + reranker for semantic matching:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. EXPAND ICP (LLM)                                            │
-│     "CFO at SaaS startups"                                      │
-│     → "CFO, Chief Financial Officer, VP Finance, finance        │
-│        executive at SaaS, Software, B2B technology startups"    │
+│  1. BUILD ICP TEXT (No LLM - preserves client intent)           │
+│     "Target titles: CFO | Industries: SaaS | Size: startup"     │
+│     Embeddings naturally understand CFO ≈ Chief Financial Officer│
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -340,14 +387,14 @@ The qualification pipeline uses embeddings + reranker for semantic matching:
 ┌─────────────────────────────────────────────────────────────────┐
 │  3. RERANKER (Jina)                                             │
 │     Cross-encoder rescores ALL leads with full profile context  │
-│     → Returns ALL leads ranked by ICP fit                       │
+│     Used to filter bottom matches, not for UI sorting           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Why this approach:**
-- Batch sizes (10-1000) are small enough for embeddings-only
-- LLM expands ICP for richer semantic matching (CFO ≈ VP Finance)
-- Reranker provides highest accuracy for final ranking
+- **No LLM expansion** - Embeddings naturally handle synonyms (CFO ≈ Chief Financial Officer). LLM expansion risks adding terms the client didn't ask for (e.g., expanding "CFO" to "VP Finance").
+- Batch sizes (10-1000) are small enough for embeddings-only scoring
+- Reranker filters obvious mismatches; UI shows remaining leads in random order (to avoid biasing human feedback for future KTO training)
 - Classification (industry/company_type) stored for display, not filtering
 - LangSmith traces every step for debugging and evals
 
@@ -426,7 +473,7 @@ LinkedIn profiles often have multiple positions listed. We prioritize **current 
 
 ### How ICP Embeddings Work
 
-ICP criteria is also embedded for semantic comparison:
+ICP criteria is embedded directly (no LLM expansion) for semantic comparison:
 
 ```
 ICP: {
@@ -435,12 +482,12 @@ ICP: {
   company_sizes: ["startup", "mid-market"]
 }
         ↓
-"Looking for: CFO, VP Finance | Industries: SaaS, Fintech | Company sizes: startup, mid-market"
+"Target titles: CFO, VP Finance | Industries: SaaS, Fintech | Company sizes: startup, mid-market"
         ↓
 OpenAI Embedding → [0.034, -0.012, ...]
 ```
 
-The magic: "CFO" and "Chief Financial Officer" have similar embeddings because they mean the same thing. This enables semantic matching without exact keyword matching
+The magic: "CFO" and "Chief Financial Officer" have similar embeddings because they mean the same thing. This enables semantic matching without exact keyword matching - and without needing LLM expansion that might add unwanted terms.
 
 ---
 
@@ -481,8 +528,11 @@ JINA_API_KEY=your_jina_api_key
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/clients` | Create new client |
+| POST | `/clients/{id}/icp` | Upsert ICP criteria for client |
+| PUT | `/clients/{id}/icp` | Upsert ICP criteria for client (alias) |
 | POST | `/clients/{id}/sync-icp` | Extract ICP from Fathom calls |
 | POST | `/clients/{id}/ingest` | Upload HTML, extract URLs |
 | POST | `/batches/{id}/enrich` | Scrape profiles for batch |
 | POST | `/batches/{id}/qualify` | Score profiles against ICP |
+| POST | `/batches/{id}/run` | Run enrich → qualify (supports background) |
 | GET | `/batches/{id}/export` | Download qualified leads CSV |
