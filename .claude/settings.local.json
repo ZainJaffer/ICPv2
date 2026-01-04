@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(python scripts/sprint_5a_approval_test.py:*)",
+      "Bash(python:*)",
+      "Bash(powershell -Command \"Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_CommandLine -like ''*uvicorn*'' } | Stop-Process -Force\")",
+      "Bash(uvicorn app.main:app:*)",
+      "Bash(pip install:*)"
+    ]
+  }
+}

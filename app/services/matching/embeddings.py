@@ -58,14 +58,6 @@ def create_profile_text(lead: Dict[str, Any]) -> str:
     if profile_data.get("summary"):
         parts.append(f"About: {profile_data['summary']}")
     
-    # 6. Skills
-    skills = profile_data.get("skills", [])
-    if skills:
-        skill_names = [s.get("name") if isinstance(s, dict) else s for s in skills[:10]]
-        skill_names = [s for s in skill_names if s]
-        if skill_names:
-            parts.append(f"Skills: {', '.join(skill_names)}")
-    
     return " | ".join(parts) if parts else "No profile information available"
 
 

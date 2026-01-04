@@ -8,7 +8,8 @@ Endpoints:
 - GET /batches/{id}/export - Download qualified leads CSV
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+import asyncio
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -20,6 +21,8 @@ from ..services.enrichment import enrich_batch
 from ..services.matching.icp_matcher import qualify_batch
 
 router = APIRouter()
+
+_RUNNING_TASKS: set[asyncio.Task] = set()
 
 
 # ============================================
@@ -55,9 +58,81 @@ class QualifyResponse(BaseModel):
     failed: int
 
 
+class RunResponse(BaseModel):
+    batch_id: str
+    status: str
+    message: str
+
+
 # ============================================
 # Endpoints
 # ============================================
+
+async def _enrich_worker(batch_id: str, limit: Optional[int] = None) -> None:
+    try:
+        supabase.table("batches").update({"status": "enriching"}).eq("id", batch_id).execute()
+        result = await enrich_batch(batch_id, limit=limit)
+        supabase.table("batches").update({
+            "status": "enriched",
+            "enriched_count": result["enriched"] + result["from_cache"],
+            "failed_count": result["failed"],
+        }).eq("id", batch_id).execute()
+    except Exception as e:
+        # Best-effort error status
+        try:
+            supabase.table("batches").update({"status": "failed"}).eq("id", batch_id).execute()
+        except Exception:
+            pass
+        print(f"[Batches] Enrich worker failed for {batch_id}: {e}", flush=True)
+
+
+async def _qualify_worker(batch_id: str) -> None:
+    try:
+        batch_result = supabase.table("batches").select("*").eq("id", batch_id).execute()
+        if not batch_result.data:
+            return
+        batch = batch_result.data[0]
+        client_id = batch["client_id"]
+
+        icp_result = supabase.table("client_icps").select("*").eq("client_id", client_id).execute()
+        if not icp_result.data:
+            supabase.table("batches").update({"status": "failed"}).eq("id", batch_id).execute()
+            return
+        icp = icp_result.data[0]
+
+        supabase.table("batches").update({"status": "qualifying"}).eq("id", batch_id).execute()
+        result = await qualify_batch(batch_id, icp)
+        supabase.table("batches").update({
+            "status": "qualified",
+            "qualified_count": result["qualified"],
+            "failed_count": (batch.get("failed_count") or 0) + result["failed"],
+        }).eq("id", batch_id).execute()
+    except Exception as e:
+        try:
+            supabase.table("batches").update({"status": "failed"}).eq("id", batch_id).execute()
+        except Exception:
+            pass
+        print(f"[Batches] Qualify worker failed for {batch_id}: {e}", flush=True)
+
+
+async def _run_worker(batch_id: str, limit: Optional[int] = None) -> None:
+    # Run end-to-end: enrich -> qualify
+    try:
+        supabase.table("batches").update({"status": "running"}).eq("id", batch_id).execute()
+        await _enrich_worker(batch_id, limit=limit)
+        await _qualify_worker(batch_id)
+    except Exception as e:
+        try:
+            supabase.table("batches").update({"status": "failed"}).eq("id", batch_id).execute()
+        except Exception:
+            pass
+        print(f"[Batches] Run worker failed for {batch_id}: {e}", flush=True)
+
+
+def _start_background(coro: asyncio.coroutines) -> None:
+    task = asyncio.create_task(coro)
+    _RUNNING_TASKS.add(task)
+    task.add_done_callback(lambda t: _RUNNING_TASKS.discard(t))
 
 @router.get("/{batch_id}")
 async def get_batch(batch_id: str):
@@ -99,7 +174,7 @@ async def get_batch(batch_id: str):
 
 
 @router.post("/{batch_id}/enrich", response_model=EnrichResponse)
-async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks, limit: Optional[int] = None):
+async def enrich_batch_endpoint(batch_id: str, limit: Optional[int] = None, background: bool = False):
     """
     Scrape LinkedIn profiles for discovered leads in batch.
     
@@ -127,24 +202,26 @@ async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks
                 failed=0
             )
         
-        # Update batch status
-        supabase.table("batches").update({"status": "enriching"}).eq("id", batch_id).execute()
-        
-        # Run enrichment (can be moved to background for large batches)
-        result = await enrich_batch(batch_id, limit=limit)
-        
-        # Update batch status
-        supabase.table("batches").update({
-            "status": "enriched",
-            "enriched_count": result["enriched"] + result["from_cache"]
-        }).eq("id", batch_id).execute()
-        
+        if background:
+            _start_background(_enrich_worker(batch_id, limit=limit))
+            return EnrichResponse(
+                batch_id=batch_id,
+                status="started",
+                enriched=0,
+                from_cache=0,
+                failed=0,
+            )
+
+        await _enrich_worker(batch_id, limit=limit)
+        # Re-fetch counts for response
+        batch_result = supabase.table("batches").select("*").eq("id", batch_id).execute()
+        batch = batch_result.data[0] if batch_result.data else {}
         return EnrichResponse(
             batch_id=batch_id,
             status="completed",
-            enriched=result["enriched"],
-            from_cache=result["from_cache"],
-            failed=result["failed"]
+            enriched=int(batch.get("enriched_count") or 0),
+            from_cache=0,
+            failed=int(batch.get("failed_count") or 0),
         )
         
     except HTTPException:
@@ -154,7 +231,7 @@ async def enrich_batch_endpoint(batch_id: str, background_tasks: BackgroundTasks
 
 
 @router.post("/{batch_id}/qualify", response_model=QualifyResponse)
-async def qualify_batch_endpoint(batch_id: str):
+async def qualify_batch_endpoint(batch_id: str, background: bool = False):
     """
     Score all enriched leads against client's ICP.
     """
@@ -201,23 +278,23 @@ async def qualify_batch_endpoint(batch_id: str):
                 failed=0
             )
         
-        # Update batch status
-        supabase.table("batches").update({"status": "qualifying"}).eq("id", batch_id).execute()
-        
-        # Run qualification
-        result = await qualify_batch(batch_id, icp)
-        
-        # Update batch status
-        supabase.table("batches").update({
-            "status": "qualified",
-            "qualified_count": result["qualified"]
-        }).eq("id", batch_id).execute()
-        
+        if background:
+            _start_background(_qualify_worker(batch_id))
+            return QualifyResponse(
+                batch_id=batch_id,
+                status="started",
+                qualified=0,
+                failed=0,
+            )
+
+        await _qualify_worker(batch_id)
+        batch_result = supabase.table("batches").select("*").eq("id", batch_id).execute()
+        batch = batch_result.data[0] if batch_result.data else {}
         return QualifyResponse(
             batch_id=batch_id,
             status="completed",
-            qualified=result["qualified"],
-            failed=result["failed"]
+            qualified=int(batch.get("qualified_count") or 0),
+            failed=int(batch.get("failed_count") or 0),
         )
         
     except HTTPException:
@@ -304,6 +381,31 @@ async def export_batch(batch_id: str, min_score: int = 0):
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
         
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{batch_id}/run", response_model=RunResponse)
+async def run_batch_endpoint(batch_id: str, limit: Optional[int] = None, background: bool = True):
+    """
+    Run end-to-end: enrich then qualify.
+
+    Use background=true to return immediately and poll with GET /batches/{id}.
+    """
+    try:
+        batch_result = supabase.table("batches").select("*").eq("id", batch_id).execute()
+        if not batch_result.data:
+            raise HTTPException(status_code=404, detail="Batch not found")
+
+        if background:
+            _start_background(_run_worker(batch_id, limit=limit))
+            return RunResponse(batch_id=batch_id, status="started", message="Batch run started. Poll GET /batches/{id}.")
+
+        await _run_worker(batch_id, limit=limit)
+        return RunResponse(batch_id=batch_id, status="completed", message="Batch run completed.")
+
     except HTTPException:
         raise
     except Exception as e:

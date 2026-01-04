@@ -12,7 +12,6 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List
-from uuid import UUID
 
 from ..services.db.supabase_client import supabase
 from ..services.scraping.html_parser import extract_linkedin_urls
@@ -123,9 +122,8 @@ async def get_client(client_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{client_id}/icp")
-async def update_icp(client_id: str, icp: ICPUpdate):
-    """Update client's ICP criteria."""
+async def _upsert_icp(client_id: str, icp: ICPUpdate):
+    """Create/update client's ICP criteria (upsert)."""
     try:
         # Verify client exists
         client_result = supabase.table("clients").select("id").eq("id", client_id).execute()
@@ -148,7 +146,9 @@ async def update_icp(client_id: str, icp: ICPUpdate):
             update_data["notes"] = icp.notes
         
         if update_data:
-            result = supabase.table("client_icps").update(update_data).eq("client_id", client_id).execute()
+            payload = {"client_id": client_id, **update_data}
+            # Upsert on client_id so this works even if the ICP row doesn't exist yet
+            result = supabase.table("client_icps").upsert(payload, on_conflict="client_id").execute()
             return {"status": "updated", "icp": result.data[0] if result.data else None}
         
         return {"status": "no_changes"}
@@ -157,6 +157,18 @@ async def update_icp(client_id: str, icp: ICPUpdate):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{client_id}/icp")
+async def upsert_icp_post(client_id: str, icp: ICPUpdate):
+    """Upsert client's ICP criteria (preferred)."""
+    return await _upsert_icp(client_id, icp)
+
+
+@router.put("/{client_id}/icp")
+async def upsert_icp_put(client_id: str, icp: ICPUpdate):
+    """Upsert client's ICP criteria (alias for PUT)."""
+    return await _upsert_icp(client_id, icp)
 
 
 @router.post("/{client_id}/ingest", response_model=IngestResponse)

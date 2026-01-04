@@ -162,7 +162,7 @@ class ApifyScraper:
     
     async def cleanup_running_actors(self, actor_id: str) -> None:
         """Check for and abort any running actors from previous failed runs."""
-        print(f"\n🔍 Checking for orphaned running actors...", flush=True)
+        print(f"\n[*] Checking for orphaned running actors...", flush=True)
         try:
             actor_client = self.client.actor(actor_id)
             runs_list = await actor_client.runs().list(status="RUNNING")
@@ -174,10 +174,10 @@ class ApifyScraper:
                 running_runs = runs_list['items']
             
             if not running_runs:
-                print("✓ No orphaned actors found", flush=True)
+                print("[OK] No orphaned actors found", flush=True)
                 return
             
-            print(f"⚠️  Found {len(running_runs)} running actor(s) - aborting...", flush=True)
+            print(f"[!] Found {len(running_runs)} running actor(s) - aborting...", flush=True)
             
             for run in running_runs:
                 run_id = run.get('id')
@@ -185,29 +185,29 @@ class ApifyScraper:
                     try:
                         run_client = self.client.run(run_id)
                         await run_client.abort()
-                        print(f"  ✓ Aborted run: {run_id}", flush=True)
+                        print(f"  [OK] Aborted run: {run_id}", flush=True)
                     except Exception as e:
-                        print(f"  ⚠️  Could not abort {run_id}: {e}", flush=True)
+                        print(f"  [!] Could not abort {run_id}: {e}", flush=True)
             
-            print("✓ Cleanup complete", flush=True)
+            print("[OK] Cleanup complete", flush=True)
             
         except Exception as e:
-            print(f"⚠️  Could not check for running actors: {e}", flush=True)
+            print(f"[!] Could not check for running actors: {e}", flush=True)
     
     async def abort_active_runs(self) -> None:
         """Abort any runs we've started that might still be running."""
         if not self.active_run_ids:
             return
         
-        print(f"\n🛑 Aborting {len(self.active_run_ids)} active run(s)...", flush=True)
+        print(f"\n[!] Aborting {len(self.active_run_ids)} active run(s)...", flush=True)
         for run_id in list(self.active_run_ids):
             try:
                 run_client = self.client.run(run_id)
                 await run_client.abort()
-                print(f"  ✓ Aborted: {run_id}", flush=True)
+                print(f"  [OK] Aborted: {run_id}", flush=True)
                 self.active_run_ids.discard(run_id)
             except Exception as e:
-                print(f"  ⚠️  Could not abort {run_id}: {e}", flush=True)
+                print(f"  [!] Could not abort {run_id}: {e}", flush=True)
     
     # ========================================================================
     # PROFILE SCRAPING
@@ -453,7 +453,7 @@ class ApifyScraper:
         print(f"[Scraper] {len(results)} from cache, {len(urls_to_scrape)} to scrape", flush=True)
         
         if not urls_to_scrape:
-            print(f"✓ All {len(urls)} URLs in cache! Nothing to scrape.")
+            print(f"[OK] All {len(urls)} URLs in cache! Nothing to scrape.")
             return results
         
         # Split into batches of URLS_PER_ACTOR
@@ -500,8 +500,8 @@ class ApifyScraper:
         print(f"SCRAPING COMPLETE")
         print(f"{'='*60}")
         print(f"  Total: {len(results)}")
-        print(f"  ✓ Success: {success_count} ({cache_count} from cache)")
-        print(f"  ✗ Failed: {fail_count}")
+        print(f"  [OK] Success: {success_count} ({cache_count} from cache)")
+        print(f"  [X] Failed: {fail_count}")
         print(f"{'='*60}\n")
         
         return results
@@ -659,7 +659,7 @@ class ApifyScraper:
                 print(f"\nWaiting {DELAY_BETWEEN_GROUPS} seconds before next group...", flush=True)
                 await asyncio.sleep(DELAY_BETWEEN_GROUPS)
         
-        print(f"\n✓ Scraped {len(all_posts)} total posts from {len(urls)} profiles")
+        print(f"\n[OK] Scraped {len(all_posts)} total posts from {len(urls)} profiles")
         return all_posts
     
     # ========================================================================
